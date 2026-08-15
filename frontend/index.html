@@ -60,6 +60,12 @@
             autocomplete="off"
           />
           <button id="scanBtn" class="scan-btn" type="button" aria-label="Kamera bilan skanerlash">📷</button>
+          <!-- Telegram WebView'da jonli video oqimi (getUserMedia) ishonchsiz ishlaydi
+               (tasdiqlangan platforma xatolari) — shuning uchun "capture" atributi
+               orqali qurilmaning tub kamera ilovasi ochiladi, bitta rasm olinadi va
+               shu rasm ichidan barkod o'qiladi. Bu Telegram ichida ham, oddiy
+               brauzerda ham bir xil ishonchli ishlaydi. -->
+          <input type="file" id="scanFileInput" accept="image/*" capture="environment" class="hidden" />
         </div>
         <div id="productHint" class="hint">Qidirishni boshlash uchun nom yoki artikul kiriting</div>
         <div id="productList" class="product-list"></div>
@@ -69,10 +75,8 @@
       <section id="view-cart" class="view">
         <h2 class="view-title">Savat</h2>
         <div id="cartEmpty" class="hint">Savat hozircha bo'sh</div>
-        <div class="form-group" id="cartRateGroup">
-          <label for="cartExchangeRate">Kurs (tovarni valyutada narxlash uchun)</label>
-          <input type="number" id="cartExchangeRate" inputmode="decimal" step="0.01" min="0" value="1" />
-        </div>
+        <!-- Har bir chet el valyutasi uchun alohida kurs maydoni shu yerda dinamik hosil bo'ladi -->
+        <div id="currencyRatesPanel"></div>
         <div id="cartList" class="cart-list"></div>
         <div class="summary-bar">
           <span>Jami:</span>
@@ -107,26 +111,35 @@
           <button id="showNewAgentBtn" type="button" class="link-btn">+ Yangi mijoz qo'shish</button>
         </div>
 
-        <div class="form-group">
-          <label for="accountSelect">To'lov hisobi</label>
-          <select id="accountSelect">
-            <option value="">Hisoblar yuklanmoqda...</option>
-          </select>
+        <div class="form-group checkbox-group">
+          <label class="checkbox-label">
+            <input type="checkbox" id="debtCheckbox" />
+            <span>QARZ — mijoz hozir to'lamaydi (faqat buyurtma + otgruzka kiritiladi)</span>
+          </label>
         </div>
 
-        <div class="form-group">
-          <label for="docTypeSelect">Hujjat turi</label>
-          <select id="docTypeSelect">
-            <option value="cashin">💵 Naqd (Приходный кассовый ордер)</option>
-            <option value="paymentin">🏦 Bank (Входящий платёж)</option>
-          </select>
-        </div>
+        <div id="paymentFieldsGroup">
+          <div class="form-group">
+            <label for="accountSelect">To'lov hisobi</label>
+            <select id="accountSelect">
+              <option value="">Hisoblar yuklanmoqda...</option>
+            </select>
+          </div>
 
-        <div class="form-group">
-          <label for="exchangeRate">Valyuta kursi (Курс валюты)</label>
-          <input type="number" id="exchangeRate" inputmode="decimal" step="0.01" min="0" value="1" />
-          <div id="rateHint" class="hint hidden" style="padding: 6px 0; text-align: left;">
-            Bu hisob tashkilotning bazaviy valyutasida — kurs kerak emas
+          <div class="form-group">
+            <label for="docTypeSelect">Hujjat turi</label>
+            <select id="docTypeSelect">
+              <option value="cashin">💵 Naqd (Приходный кассовый ордер)</option>
+              <option value="paymentin">🏦 Bank (Входящий платёж)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="paymentMoment">To'lov sanasi/vaqti (ixtiyoriy)</label>
+            <input type="datetime-local" id="paymentMoment" />
+            <div class="hint" style="padding: 6px 0; text-align: left;">
+              Bo'sh qoldirilsa — hozirgi vaqt. Kartada oldindan to'langan bo'lsa, shu yerga haqiqiy vaqtni kiriting.
+            </div>
           </div>
         </div>
 
@@ -156,14 +169,10 @@
     </nav>
   </div>
 
-  <!-- Kamera-skaner oynasi -->
-  <div id="scannerOverlay" class="scanner-overlay hidden">
-    <div class="scanner-header">
-      <span>Barkodni kameraga tuting</span>
-      <button id="scannerCloseBtn" type="button" aria-label="Yopish">✕</button>
-    </div>
-    <div id="scannerViewport"></div>
-  </div>
+  <!-- Rasmni dekodlash uchun html5-qrcode kutubxonasiga kerak bo'ladigan, ko'zga
+       ko'rinmaydigan konteyner (natija darhol qayta ishlanadi, foydalanuvchiga
+       ko'rsatilmaydi) -->
+  <div id="scanDecodeTarget" class="hidden"></div>
 
   <div id="toast" class="toast hidden"></div>
   <div id="loadingOverlay" class="loading-overlay hidden">

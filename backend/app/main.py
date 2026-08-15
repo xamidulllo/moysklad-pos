@@ -10,6 +10,7 @@ Marshrutlar:
   POST /api/counterparties  — yangi mijoz (kontakt) yaratish
   GET  /api/accounts        — tashkilot hisoblarini olish (entity/organization/{id}/accounts)
   GET  /api/context         — tashkilotlar va omborlar ro'yxati (entity/organization, entity/store)
+  GET  /api/currencies      — tashkilotda sozlangan valyutalar ro'yxati (entity/currency)
   POST /api/checkout        — customerorder -> demand -> to'lov (cashin/paymentin) zanjirini yaratadi
 
 Har bir /api/* (login'dan tashqari) marshrut joriy kassir sessiyasini talab qiladi —
@@ -140,6 +141,11 @@ async def me(session: dict = Depends(get_current_session)):
 def _assortment_row_to_item(row: dict) -> dict:
     sale_prices = row.get("salePrices") or []
     price = (sale_prices[0]["value"] / 100) if sale_prices else 0
+    # Har bir narx MoySklad'da o'zining valyutasiga ega bo'lishi mumkin (masalan ba'zi
+    # tovarlar dollarda, ba'zilari so'mda kiritilgan bo'lishi mumkin) — buni frontend'ga
+    # uzatamiz, shunda kassir tovar narxini to'g'ri valyutada ko'radi/tahrirlaydi.
+    price_currency = sale_prices[0].get("currency") if sale_prices else None
+    price_currency_id = _id_from_href(price_currency["meta"]["href"]) if price_currency else None
     return {
         "id": row.get("id"),
         "meta": row.get("meta"),
@@ -147,6 +153,7 @@ def _assortment_row_to_item(row: dict) -> dict:
         "code": row.get("code"),
         "article": row.get("article"),
         "price": price,
+        "price_currency_id": price_currency_id,
         "type": (row.get("meta") or {}).get("type"),
     }
 
@@ -289,6 +296,29 @@ async def get_context(token: str = Depends(get_current_token)):
     return await _cached("context", token, loader)
 
 
+@app.get("/api/currencies")
+async def get_currencies(token: str = Depends(get_current_token)):
+    """Tashkilotda sozlangan barcha valyutalarni qaytaradi (masalan so'm, dollar, rubl —
+    aniq nechta va qaysilari ekani hisobga qarab farq qiladi, kodda qattiq yozilmagan).
+    Frontend shu ro'yxat asosida har bir tovar/kurs uchun valyuta tanlovlarini quradi."""
+
+    async def loader():
+        data = await ms_request("GET", "/entity/currency", token=token, params={"limit": 100})
+        return {
+            "items": [
+                {
+                    "id": r["id"],
+                    "meta": r["meta"],
+                    "name": r.get("name") or r.get("isoCode") or "Valyuta",
+                    "is_default": bool(r.get("default")),
+                }
+                for r in data.get("rows", [])
+            ]
+        }
+
+    return await _cached("currencies", token, loader)
+
+
 # ---------------------------------------------------------------------------
 # Checkout: Заказ покупателя -> Otgruzka -> To'lov
 # ---------------------------------------------------------------------------
@@ -341,8 +371,17 @@ async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_to
         await ms_request("DELETE", f"/entity/customerorder/{order['id']}", token=token)
         raise
 
-    # 3) To'lov hujjati — kassir tanlagan hujjat turiga qarab naqd (cashin) yoki
-    # bank (paymentin). Foydalanuvchi tanloviga ko'ra BUYURTMAning o'ziga bog'lanadi
+    # 3) To'lov hujjati — QARZGA sotuvda umuman yaratilmaydi (faqat buyurtma +
+    # otgruzka qoladi, mijoz qarzi MoySklad'da to'lanmagan buyurtma sifatida ko'rinadi).
+    if payload.is_debt:
+        return {
+            "order": {"id": order["id"], "name": order.get("name")},
+            "demand": {"id": demand["id"], "name": demand.get("name")},
+            "payment": None,
+        }
+
+    # Kassir tanlagan hujjat turiga qarab naqd (cashin) yoki bank (paymentin).
+    # Foydalanuvchi tanloviga ko'ra BUYURTMAning o'ziga bog'lanadi
     # ("operations[].linkedSum"), otgruzkaga emas.
     # ESLATMA (real API'da tekshirilgan): "paymentin" hisob bog'lanishini
     # ("organizationAccount") to'liq saqlaydi, lekin "cashin" (ПКО) MoySklad'da
@@ -357,6 +396,12 @@ async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_to
         "organizationAccount": {"meta": payload.account_meta},
         "operations": [{"meta": order["meta"], "linkedSum": order_sum}],
     }
+
+    # Kartada oldindan to'langan holatlar uchun — to'lov sanasi/vaqti sotuv
+    # vaqtidan farq qilishi mumkin, kassir buni qo'lda ko'rsata oladi
+    # (real API'da tekshirilgan: "moment": "YYYY-MM-DD HH:MM:SS" formatida qabul qilinadi).
+    if payload.payment_moment:
+        payment_body["moment"] = payload.payment_moment
 
     # Kassir qo'lda kiritgan valyuta kursini to'lov hujjatining "rate" obyektiga joylash.
     # MUHIM: MoySklad tashkilotning bazaviy (учетная) valyutasi uchun rate.value != 1
