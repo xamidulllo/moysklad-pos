@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: moysklad-pos
+    runtime: python
+    plan: free
+    buildCommand: pip install -r backend/requirements.txt
+    startCommand: cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      # Render "Environment" bo'limida haqiqiy qiymatlarni kiritasiz (sync: false —
+      # bu maxfiy qiymatlar, render.yaml ichida yozilmaydi).
+      - key: BOT_TOKEN
+        sync: false
+      - key: SESSION_COOKIE_SECURE
+        value: "true"
+      - key: SESSION_TTL_HOURS
+        value: "12"
+    # PUBLIC_BASE_URL qo'lda kerak emas — bot.py Render tomonidan avtomatik
+    # beriladigan RENDER_EXTERNAL_URL o'zgaruvchisidan foydalanadi.

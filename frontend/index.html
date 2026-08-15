@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <title>POS Kassa — MoySklad</title>
+  <meta name="theme-color" content="#0f172a" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon.svg" />
+  <link rel="stylesheet" href="style.css" />
+  <!-- Telegram Mini App sifatida ochilganda ishlaydi; oddiy brauzerda bu skript
+       shunchaki hech narsa qilmaydi (window.Telegram bo'lmaydi) -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <!-- KIRISH EKRANI: kassir o'zining shaxsiy MoySklad login/paroli bilan kiradi -->
+  <div id="loginScreen" class="login-screen">
+    <form id="loginForm" class="login-card">
+      <h1>POS Kassa</h1>
+      <p class="login-subtitle">MoySklad hisobingiz bilan kiring</p>
+      <div class="form-group">
+        <label for="loginInput">Login</label>
+        <input type="text" id="loginInput" autocomplete="username" required />
+      </div>
+      <div class="form-group">
+        <label for="passwordInput">Parol</label>
+        <input type="password" id="passwordInput" autocomplete="current-password" required />
+      </div>
+      <button type="submit" id="loginBtn" class="primary-btn">Kirish</button>
+    </form>
+  </div>
+
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <h1>POS Kassa</h1>
+      <div class="topbar-right">
+        <span id="employeeName" class="employee-name"></span>
+        <button id="logoutBtn" class="logout-btn" type="button" aria-label="Chiqish">⏻</button>
+        <button id="cartBtn" class="cart-btn" type="button" aria-label="Savat">
+          <span class="cart-icon">🛒</span>
+          <span id="cartCount" class="cart-badge">0</span>
+        </button>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- 1-EKRAN: Mahsulot qidirish va tanlash -->
+      <section id="view-products" class="view active">
+        <div class="search-bar">
+          <input
+            type="search"
+            id="searchInput"
+            placeholder="Mahsulot nomi yoki SKU bo'yicha qidirish..."
+            autocomplete="off"
+          />
+        </div>
+        <div id="productHint" class="hint">Qidirishni boshlash uchun nom yoki artikul kiriting</div>
+        <div id="productList" class="product-list"></div>
+      </section>
+
+      <!-- 2-EKRAN: Savat -->
+      <section id="view-cart" class="view">
+        <h2 class="view-title">Savat</h2>
+        <div id="cartEmpty" class="hint">Savat hozircha bo'sh</div>
+        <div id="cartList" class="cart-list"></div>
+        <div class="summary-bar">
+          <span>Jami:</span>
+          <span id="cartTotal">0 so'm</span>
+        </div>
+        <button id="toCheckoutBtn" class="primary-btn" type="button" disabled>Davom etish</button>
+      </section>
+
+      <!-- 3-EKRAN: To'lov -->
+      <section id="view-checkout" class="view">
+        <h2 class="view-title">To'lov</h2>
+
+        <div class="form-group" id="orgGroup">
+          <label for="orgSelect">Tashkilot</label>
+          <select id="orgSelect"></select>
+        </div>
+
+        <div class="form-group" id="storeGroup">
+          <label for="storeSelect">Ombor</label>
+          <select id="storeSelect"></select>
+        </div>
+
+        <div class="form-group">
+          <label for="agentSearch">Mijoz</label>
+          <input type="text" id="agentSearch" placeholder="Mijozni ism bo'yicha qidirish..." autocomplete="off" />
+          <div id="agentResults" class="dropdown-results hidden"></div>
+          <div id="agentSelected" class="selected-chip hidden"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="accountSelect">To'lov hisobi</label>
+          <select id="accountSelect">
+            <option value="">Hisoblar yuklanmoqda...</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="docTypeSelect">Hujjat turi</label>
+          <select id="docTypeSelect">
+            <option value="cashin">💵 Naqd (Приходный кассовый ордер)</option>
+            <option value="paymentin">🏦 Bank (Входящий платёж)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="exchangeRate">Valyuta kursi (Курс валюты)</label>
+          <input type="number" id="exchangeRate" inputmode="decimal" step="0.01" min="0" value="1" />
+          <div id="rateHint" class="hint hidden" style="padding: 6px 0; text-align: left;">
+            Bu hisob tashkilotning bazaviy valyutasida — kurs kerak emas
+          </div>
+        </div>
+
+        <div class="summary-bar">
+          <span>To'lov summasi:</span>
+          <span id="checkoutTotal">0 so'm</span>
+        </div>
+
+        <button id="payBtn" class="primary-btn" type="button">To'lash</button>
+      </section>
+    </main>
+
+    <nav class="bottom-nav">
+      <button class="nav-btn active" data-view="products" type="button">
+        <span class="nav-icon">📦</span>
+        <span>Mahsulotlar</span>
+      </button>
+      <button class="nav-btn" data-view="cart" type="button">
+        <span class="nav-icon">🛒</span>
+        <span>Savat</span>
+      </button>
+    </nav>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <div id="loadingOverlay" class="loading-overlay hidden">
+    <div class="spinner"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

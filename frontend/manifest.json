@@ -1,0 +1,15 @@
+{
+  "name": "MoySklad POS Kassa",
+  "short_name": "POS Kassa",
+  "description": "MoySklad bilan integratsiyalashgan mobil kassa ilovasi",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "orientation": "portrait",
+  "lang": "uz",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
