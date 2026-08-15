@@ -23,3 +23,9 @@ class CheckoutRequest(BaseModel):
     document_type: str = Field(..., pattern="^(cashin|paymentin)$")
     currency_meta: Optional[dict] = None
     exchange_rate: float = Field(1, ge=0)
+    comment: Optional[str] = Field(None, max_length=2000)
+
+
+class CounterpartyCreate(BaseModel):
+    name: str = Field(..., min_length=1)
+    phone: Optional[str] = None

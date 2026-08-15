@@ -15,6 +15,8 @@
   <!-- Telegram Mini App sifatida ochilganda ishlaydi; oddiy brauzerda bu skript
        shunchaki hech narsa qilmaydi (window.Telegram bo'lmaydi) -->
   <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <!-- Kamera orqali barkod skanerlash uchun -->
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 </head>
 <body>
   <!-- KIRISH EKRANI: kassir o'zining shaxsiy MoySklad login/paroli bilan kiradi -->
@@ -50,13 +52,14 @@
     <main id="main">
       <!-- 1-EKRAN: Mahsulot qidirish va tanlash -->
       <section id="view-products" class="view active">
-        <div class="search-bar">
+        <div class="search-bar search-bar-row">
           <input
             type="search"
             id="searchInput"
             placeholder="Mahsulot nomi yoki SKU bo'yicha qidirish..."
             autocomplete="off"
           />
+          <button id="scanBtn" class="scan-btn" type="button" aria-label="Kamera bilan skanerlash">📷</button>
         </div>
         <div id="productHint" class="hint">Qidirishni boshlash uchun nom yoki artikul kiriting</div>
         <div id="productList" class="product-list"></div>
@@ -66,6 +69,10 @@
       <section id="view-cart" class="view">
         <h2 class="view-title">Savat</h2>
         <div id="cartEmpty" class="hint">Savat hozircha bo'sh</div>
+        <div class="form-group" id="cartRateGroup">
+          <label for="cartExchangeRate">Kurs (tovarni valyutada narxlash uchun)</label>
+          <input type="number" id="cartExchangeRate" inputmode="decimal" step="0.01" min="0" value="1" />
+        </div>
         <div id="cartList" class="cart-list"></div>
         <div class="summary-bar">
           <span>Jami:</span>
@@ -93,6 +100,11 @@
           <input type="text" id="agentSearch" placeholder="Mijozni ism bo'yicha qidirish..." autocomplete="off" />
           <div id="agentResults" class="dropdown-results hidden"></div>
           <div id="agentSelected" class="selected-chip hidden"></div>
+          <div id="newAgentForm" class="new-agent-form hidden">
+            <input type="text" id="newAgentName" placeholder="Yangi mijoz ismi..." autocomplete="off" />
+            <button id="saveNewAgentBtn" type="button" class="secondary-btn">Saqlash</button>
+          </div>
+          <button id="showNewAgentBtn" type="button" class="link-btn">+ Yangi mijoz qo'shish</button>
         </div>
 
         <div class="form-group">
@@ -118,6 +130,11 @@
           </div>
         </div>
 
+        <div class="form-group">
+          <label for="orderComment">Izoh (ixtiyoriy)</label>
+          <textarea id="orderComment" rows="2" placeholder="Buyurtma haqida izoh..."></textarea>
+        </div>
+
         <div class="summary-bar">
           <span>To'lov summasi:</span>
           <span id="checkoutTotal">0 so'm</span>
@@ -137,6 +154,15 @@
         <span>Savat</span>
       </button>
     </nav>
+  </div>
+
+  <!-- Kamera-skaner oynasi -->
+  <div id="scannerOverlay" class="scanner-overlay hidden">
+    <div class="scanner-header">
+      <span>Barkodni kameraga tuting</span>
+      <button id="scannerCloseBtn" type="button" aria-label="Yopish">✕</button>
+    </div>
+    <div id="scannerViewport"></div>
   </div>
 
   <div id="toast" class="toast hidden"></div>

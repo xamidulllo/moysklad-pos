@@ -10,14 +10,19 @@ const API = {
   logout: "/api/logout",
   me: "/api/me",
   products: (q) => `/api/products?q=${encodeURIComponent(q)}`,
+  productScan: (code) => `/api/products/scan?code=${encodeURIComponent(code)}`,
   counterparties: (q) => `/api/counterparties?q=${encodeURIComponent(q)}`,
+  counterpartiesCreate: "/api/counterparties",
   accounts: "/api/accounts",
   context: "/api/context",
   checkout: "/api/checkout",
 };
 
 const state = {
-  cart: [], // { id, meta, name, price, quantity }
+  // Har bir cart elementi: { id, meta, name, quantity, price /* har doim so'mda,
+  // hisoblangan */, priceCurrency: 'som'|'foreign', rawPrice /* kassir kiritgan
+  // asl qiymat, priceCurrency birligida */ }
+  cart: [],
   accounts: [], // to'liq hisob obyektlari (id -> meta/currency qidirish uchun)
   organizations: [],
   stores: [],
@@ -25,6 +30,9 @@ const state = {
   selectedStore: null,
   selectedAgent: null, // { meta, name }
   selectedAccount: null, // accounts ro'yxatidagi element
+  // Savat va to'lov ekranlaridagi "Kurs" maydonlari shu bittagina qiymatga bog'langan —
+  // biri o'zgarsa ikkinchisi ham yangilanadi, ikkalasi ham bitta real kursni anglatadi.
+  exchangeRate: 1,
 };
 
 // ---------------- Yordamchi funksiyalar ----------------
@@ -176,6 +184,8 @@ function addToCart(product) {
       meta: product.meta,
       name: product.name,
       price: product.price,
+      rawPrice: product.price,
+      priceCurrency: "som",
       quantity: 1,
     });
   }
@@ -200,6 +210,41 @@ function removeFromCart(id) {
 
 function cartTotal() {
   return state.cart.reduce((sum, i) => sum + i.price * i.quantity, 0);
+}
+
+// Kassir narxni to'g'ridan-to'g'ri boshqa valyutada kiritishi mumkin (masalan USD) —
+// bunday holda "price" (so'm ekvivalenti) joriy kursga ko'ra hisoblanadi.
+function setItemRawPrice(id, rawValue) {
+  const item = state.cart.find((i) => i.id === id);
+  if (!item) return;
+  const raw = Math.max(0, Number(rawValue) || 0);
+  item.rawPrice = raw;
+  item.price = item.priceCurrency === "foreign" ? raw * state.exchangeRate : raw;
+  renderCart();
+}
+
+function setItemCurrency(id, currency) {
+  const item = state.cart.find((i) => i.id === id);
+  if (!item || item.priceCurrency === currency) return;
+  // Valyuta turi almashtirilganda joriy so'm summasi o'zgarmasligi uchun
+  // rawPrice'ni yangi birlikka moslab qayta hisoblaymiz.
+  item.rawPrice = currency === "foreign" && state.exchangeRate > 0 ? item.price / state.exchangeRate : item.price;
+  item.priceCurrency = currency;
+  renderCart();
+}
+
+function setExchangeRate(value) {
+  const rate = Math.max(0, Number(value) || 0);
+  state.exchangeRate = rate;
+  // Kurs o'zgarsa, "valyuta"da narxlangan tovarlarning so'm ekvivalenti qayta hisoblanadi
+  state.cart.forEach((item) => {
+    if (item.priceCurrency === "foreign") {
+      item.price = item.rawPrice * rate;
+    }
+  });
+  document.getElementById("cartExchangeRate").value = String(rate);
+  document.getElementById("exchangeRate").value = String(rate);
+  renderCart();
 }
 
 function renderCart() {
@@ -231,6 +276,21 @@ function renderCart() {
             </div>
             <div class="line-total">${formatSom(item.price * item.quantity)}</div>
           </div>
+          <div class="cart-item-price-row">
+            <input
+              type="number"
+              class="price-input"
+              data-id="${item.id}"
+              inputmode="decimal"
+              step="0.01"
+              min="0"
+              value="${item.rawPrice}"
+            />
+            <div class="currency-toggle">
+              <button type="button" class="curr-btn ${item.priceCurrency === "som" ? "active" : ""}" data-id="${item.id}" data-currency="som">so'm</button>
+              <button type="button" class="curr-btn ${item.priceCurrency === "foreign" ? "active" : ""}" data-id="${item.id}" data-currency="foreign">valyuta</button>
+            </div>
+          </div>
         </div>`
       )
       .join("");
@@ -240,6 +300,14 @@ function renderCart() {
     });
     cartList.querySelectorAll(".remove-btn").forEach((btn) => {
       btn.addEventListener("click", () => removeFromCart(btn.dataset.id));
+    });
+    // "change" (input emas) — aks holda har bosilgan raqamda qayta render bo'lib,
+    // maydon fokusdan chiqib ketardi
+    cartList.querySelectorAll(".price-input").forEach((input) => {
+      input.addEventListener("change", () => setItemRawPrice(input.dataset.id, input.value));
+    });
+    cartList.querySelectorAll(".curr-btn").forEach((btn) => {
+      btn.addEventListener("click", () => setItemCurrency(btn.dataset.id, btn.dataset.currency));
     });
   }
 
@@ -338,9 +406,13 @@ function fillAccountSelect() {
 
     // MoySklad tashkilotning bazaviy valyutasi uchun kursni 1'dan boshqa qiymatga
     // o'zgartirishga ruxsat bermaydi (xato 3007) — shu hisoblarda maydonni bloklaymiz.
+    // Diqqat: bu faqat TO'LOV hujjatiga jo'natiladigan qiymatni ko'rsatadi — savatdagi
+    // tovarlarni valyutada narxlash uchun ishlatilgan umumiy kurs (state.exchangeRate)
+    // bilan aralashtirilmaydi, aks holda hisob almashtirilganda savat summalari
+    // kutilmaganda o'zgarib qolardi.
     rateInput.disabled = Boolean(acc.is_base_currency);
     rateHint.classList.toggle("hidden", !acc.is_base_currency);
-    if (acc.is_base_currency) rateInput.value = "1";
+    rateInput.value = acc.is_base_currency ? "1" : String(state.exchangeRate);
   };
 
   applySelection(accountsForOrg[0]);
@@ -389,6 +461,7 @@ function selectAgent(agent) {
   state.selectedAgent = agent;
   agentSearch.value = "";
   agentResults.classList.add("hidden");
+  newAgentForm.classList.add("hidden");
   agentSelected.classList.remove("hidden");
   agentSelected.innerHTML = `<span>${escapeHtml(agent.name)}</span> <button type="button" id="clearAgentBtn">✕</button>`;
   document.getElementById("clearAgentBtn").addEventListener("click", () => {
@@ -398,6 +471,36 @@ function selectAgent(agent) {
 }
 
 agentSearch.addEventListener("input", debounce((e) => runAgentSearch(e.target.value), 350));
+
+// ---------------- To'lov ekrani: yangi mijoz qo'shish ----------------
+
+const newAgentForm = document.getElementById("newAgentForm");
+const newAgentName = document.getElementById("newAgentName");
+
+document.getElementById("showNewAgentBtn").addEventListener("click", () => {
+  agentResults.classList.add("hidden");
+  newAgentForm.classList.toggle("hidden");
+  if (!newAgentForm.classList.contains("hidden")) newAgentName.focus();
+});
+
+document.getElementById("saveNewAgentBtn").addEventListener("click", async () => {
+  const name = newAgentName.value.trim();
+  if (!name) {
+    showToast("Mijoz ismini kiriting", true);
+    return;
+  }
+  try {
+    showLoading(true);
+    const agent = await apiPost(API.counterpartiesCreate, { name });
+    newAgentName.value = "";
+    selectAgent(agent);
+    showToast(`"${agent.name}" mijoz sifatida saqlandi va tanlandi`);
+  } catch (err) {
+    showToast("Mijoz saqlashda xatolik: " + extractErrorMessage(err), true);
+  } finally {
+    showLoading(false);
+  }
+});
 
 // ---------------- To'lash ----------------
 
@@ -440,6 +543,7 @@ async function handlePay() {
     document_type: document.getElementById("docTypeSelect").value,
     currency_meta: state.selectedAccount.currency ? state.selectedAccount.currency.meta : null,
     exchange_rate: exchangeRate,
+    comment: document.getElementById("orderComment").value.trim() || null,
   };
 
   try {
@@ -458,12 +562,76 @@ async function handlePay() {
 
 function resetAfterPayment() {
   state.cart = [];
-  renderCart();
   state.selectedAgent = null;
   agentSelected.classList.add("hidden");
-  document.getElementById("exchangeRate").value = "1";
+  document.getElementById("orderComment").value = "";
+  setExchangeRate(1);
+  renderCart();
   switchView("products");
 }
+
+// ---------------- Kurs maydonlarini sinxronlash (savat <-> to'lov) ----------------
+
+document.getElementById("cartExchangeRate").addEventListener("input", (e) => setExchangeRate(e.target.value));
+document.getElementById("exchangeRate").addEventListener("input", (e) => {
+  if (e.target.disabled) return; // bazaviy valyutali hisobda maydon bloklangan, o'zgartirilmaydi
+  setExchangeRate(e.target.value);
+});
+
+// ---------------- Kamera bilan barkod skanerlash ----------------
+
+let scannerInstance = null;
+
+async function openScanner() {
+  const overlay = document.getElementById("scannerOverlay");
+  overlay.classList.remove("hidden");
+  try {
+    scannerInstance = new Html5Qrcode("scannerViewport");
+    await scannerInstance.start(
+      { facingMode: "environment" },
+      { fps: 10, qrbox: { width: 250, height: 150 } },
+      onScanSuccess,
+      () => {} // har bir muvaffaqiyatsiz freym uchun chaqiriladi — jim o'tkaziladi
+    );
+  } catch (err) {
+    showToast("Kameraga kirish imkoni bo'lmadi: " + (err && err.message ? err.message : err), true);
+    await closeScanner();
+  }
+}
+
+async function closeScanner() {
+  const overlay = document.getElementById("scannerOverlay");
+  overlay.classList.add("hidden");
+  if (scannerInstance) {
+    try {
+      await scannerInstance.stop();
+      scannerInstance.clear();
+    } catch (err) {
+      /* skaner allaqachon to'xtagan bo'lishi mumkin */
+    }
+    scannerInstance = null;
+  }
+}
+
+async function onScanSuccess(decodedText) {
+  await closeScanner();
+  try {
+    showLoading(true);
+    const data = await apiGet(API.productScan(decodedText));
+    if (!data.item) {
+      showToast(`Barkod topilmadi: ${decodedText}`, true);
+      return;
+    }
+    addToCart(data.item);
+  } catch (err) {
+    showToast("Skanerlashda xatolik: " + extractErrorMessage(err), true);
+  } finally {
+    showLoading(false);
+  }
+}
+
+document.getElementById("scanBtn").addEventListener("click", openScanner);
+document.getElementById("scannerCloseBtn").addEventListener("click", closeScanner);
 
 // ---------------- Autentifikatsiya ----------------
 //

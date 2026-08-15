@@ -4,8 +4,10 @@ Marshrutlar:
   POST /api/login           — kassir MoySklad login/paroli bilan kiradi (sessiya ochiladi)
   POST /api/logout          — joriy sessiyani yopadi
   GET  /api/me               — joriy kassir haqida ma'lumot
-  GET  /api/products        — mahsulotlarni nomi/SKU bo'yicha qidirish (entity/assortment)
+  GET  /api/products        — mahsulotlarni nomi/kod/artikul bo'yicha qidirish (entity/assortment)
+  GET  /api/products/scan   — barkod bo'yicha aniq moslikni topish (kamera-skaner uchun)
   GET  /api/counterparties  — mijozlarni qidirish (entity/counterparty)
+  POST /api/counterparties  — yangi mijoz (kontakt) yaratish
   GET  /api/accounts        — tashkilot hisoblarini olish (entity/organization/{id}/accounts)
   GET  /api/context         — tashkilotlar va omborlar ro'yxati (entity/organization, entity/store)
   POST /api/checkout        — customerorder -> demand -> to'lov (cashin/paymentin) zanjirini yaratadi
@@ -13,6 +15,7 @@ Marshrutlar:
 Har bir /api/* (login'dan tashqari) marshrut joriy kassir sessiyasini talab qiladi —
 MoySklad'ga so'rov shu kassirning shaxsiy tokeni bilan yuboriladi (auth.py'ga qarang).
 """
+import asyncio
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -26,7 +29,7 @@ from .auth import create_session, delete_session, get_current_session, get_curre
 from .bot import start_bot, stop_bot
 from .config import SESSION_COOKIE_NAME, SESSION_COOKIE_SECURE, SESSION_TTL_HOURS
 from .moysklad_client import exchange_credentials_for_token, ms_request
-from .schemas import CheckoutRequest, LoginRequest
+from .schemas import CheckoutRequest, CounterpartyCreate, LoginRequest
 
 
 @asynccontextmanager
@@ -134,29 +137,65 @@ async def me(session: dict = Depends(get_current_session)):
 # ---------------------------------------------------------------------------
 
 
+def _assortment_row_to_item(row: dict) -> dict:
+    sale_prices = row.get("salePrices") or []
+    price = (sale_prices[0]["value"] / 100) if sale_prices else 0
+    return {
+        "id": row.get("id"),
+        "meta": row.get("meta"),
+        "name": row.get("name"),
+        "code": row.get("code"),
+        "article": row.get("article"),
+        "price": price,
+        "type": (row.get("meta") or {}).get("type"),
+    }
+
+
 @app.get("/api/products")
 async def search_products(q: str = Query("", alias="q"), token: str = Depends(get_current_token)):
-    params = {"limit": 50}
-    if q:
-        params["search"] = q
-    data = await ms_request("GET", "/entity/assortment", token=token, params=params)
+    """Mahsulotlarni nomi, kodi yoki artikuli bo'yicha qidiradi.
 
-    items = []
-    for row in data.get("rows", []):
-        sale_prices = row.get("salePrices") or []
-        price = (sale_prices[0]["value"] / 100) if sale_prices else 0
-        items.append(
-            {
-                "id": row.get("id"),
-                "meta": row.get("meta"),
-                "name": row.get("name"),
-                "code": row.get("code"),
-                "article": row.get("article"),
-                "price": price,
-                "type": (row.get("meta") or {}).get("type"),
-            }
-        )
-    return {"items": items}
+    ESLATMA (real API'da tekshirilgan): "entity/assortment" endpoint'i "search"
+    parametrini JIM RAVISHDA e'tiborga olmaydi (har doim to'liq ro'yxatni
+    qaytaradi) — MoySklad'ning boshqa ko'p entity'laridan farqli xatti-harakat.
+    Shu sabab bu yerda "filter=maydon~qiymat" sintaksisi ishlatiladi; turli
+    maydonlar bo'yicha filter'lar MoySklad'da AND birlashtiriladi (OR emas),
+    shuning uchun har bir maydon uchun alohida so'rov yuborilib, natijalar
+    birlashtiriladi (OR semantikasini qo'lda hosil qilish).
+    """
+    if not q:
+        data = await ms_request("GET", "/entity/assortment", token=token, params={"limit": 50})
+        return {"items": [_assortment_row_to_item(r) for r in data.get("rows", [])]}
+
+    results = await asyncio.gather(
+        *[
+            ms_request("GET", "/entity/assortment", token=token, params={"filter": f"{field}~{q}", "limit": 50})
+            for field in ("name", "code", "article")
+        ]
+    )
+
+    merged: dict[str, dict] = {}
+    for data in results:
+        for row in data.get("rows", []):
+            merged[row["id"]] = row
+
+    return {"items": [_assortment_row_to_item(r) for r in merged.values()]}
+
+
+@app.get("/api/products/scan")
+async def scan_product(code: str = Query(..., min_length=1), token: str = Depends(get_current_token)):
+    """Kamera bilan o'qilgan barkod bo'yicha ANIQ moslikni qidiradi.
+
+    Real API'da tekshirilgan: "filter=barcode=<qiymat>" barkodlar massivi
+    ("barcodes": [{"ean13": "..."}]) ichidan aniq moslikni topadi.
+    """
+    data = await ms_request(
+        "GET", "/entity/assortment", token=token, params={"filter": f"barcode={code}", "limit": 1}
+    )
+    rows = data.get("rows", [])
+    if not rows:
+        return {"item": None}
+    return {"item": _assortment_row_to_item(rows[0])}
 
 
 @app.get("/api/counterparties")
@@ -171,6 +210,16 @@ async def search_counterparties(q: str = Query("", alias="q"), token: str = Depe
             for row in data.get("rows", [])
         ]
     }
+
+
+@app.post("/api/counterparties")
+async def create_counterparty(payload: CounterpartyCreate, token: str = Depends(get_current_token)):
+    """Yangi mijoz (kontakt) yaratadi — real API'da tekshirilgan, faqat 'name' majburiy."""
+    body = {"name": payload.name}
+    if payload.phone:
+        body["phone"] = payload.phone
+    row = await ms_request("POST", "/entity/counterparty", token=token, json=body)
+    return {"id": row["id"], "meta": row["meta"], "name": row["name"]}
 
 
 CASH_KEYWORDS = ("kassa", "касс", "нал", "naqd", "cash")
@@ -268,6 +317,8 @@ async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_to
         "positions": positions,
         "applicable": True,
     }
+    if payload.comment:
+        order_body["description"] = payload.comment
     order = await ms_request("POST", "/entity/customerorder", token=token, json=order_body)
     order_sum = order.get("sum", 0)
 
@@ -281,6 +332,8 @@ async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_to
         "applicable": True,
         "customerOrder": {"meta": order["meta"]},
     }
+    if payload.comment:
+        demand_body["description"] = payload.comment
     try:
         demand = await ms_request("POST", "/entity/demand", token=token, json=demand_body)
     except HTTPException:
