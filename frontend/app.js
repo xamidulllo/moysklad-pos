@@ -785,14 +785,23 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
   showLoginScreen();
 });
 
-// ---------------- PWA: service worker ----------------
-
+// ---------------- Eski Service Worker'ni tozalash ----------------
+//
+// Ilova avval agressiv keshlash bilan Service Worker ishlatgan edi — bu haqiqiy
+// bug'ga olib keldi: kod yangilansa ham, oldin ilovani ochgan foydalanuvchilar
+// eskirgan versiyani ko'raverishardi (masalan yangi tugma/maydonlar "yo'q"
+// bo'lib ko'rinardi). Bu ilovaning har bir funksiyasi baribir doimiy MoySklad
+// ulanishini talab qilgani uchun oflayn kesh foyda bermaydi — shuning uchun
+// endi Service Worker umuman ro'yxatdan o'tkazilmaydi, va agar foydalanuvchi
+// qurilmasida avvalgi versiyadan qolgan Service Worker bo'lsa, shu yerda
+// avtomatik o'chirib tashlanadi.
 if ("serviceWorker" in navigator) {
-  window.addEventListener("load", () => {
-    navigator.serviceWorker.register("/sw.js").catch(() => {
-      /* offline-rejim ixtiyoriy, xatolik kritik emas */
-    });
+  navigator.serviceWorker.getRegistrations().then((registrations) => {
+    registrations.forEach((registration) => registration.unregister());
   });
+  if (window.caches) {
+    caches.keys().then((keys) => keys.forEach((key) => caches.delete(key)));
+  }
 }
 
 // ---------------- Telegram Mini App integratsiyasi ----------------

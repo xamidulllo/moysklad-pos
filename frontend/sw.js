@@ -1,26 +1,21 @@
-const CACHE_NAME = "pos-kassa-v1";
-const SHELL = ["/", "/index.html", "/style.css", "/app.js", "/manifest.json", "/icon.svg"];
+// ESLATMA: bu ilova hozircha faol rivojlantirilmoqda va har bir funksiyasi
+// baribir doimiy MoySklad ulanishini talab qiladi (haqiqiy oflayn foydalanish
+// imkoni deyarli yo'q) — shuning uchun sahifani agressiv keshlash foyda
+// bermaydi, aksincha eskirgan versiya (masalan tugmalar/maydonlar yo'q)
+// ko'rsatilishiga olib kelishi mumkin edi. Shu sabab bu Service Worker endi
+// hech narsani keshlamaydi — faqat avvalgi versiyalar qoldirgan eski keshlarni
+// tozalaydi va barcha so'rovlarni to'g'ridan-to'g'ri tarmoqqa uzatadi.
 
-self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.addAll(SHELL)));
+self.addEventListener("install", () => {
   self.skipWaiting();
 });
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))
-    )
+    caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key))))
   );
   self.clients.claim();
 });
 
-self.addEventListener("fetch", (event) => {
-  const url = new URL(event.request.url);
-  // API so'rovlari doim tarmoqdan olinadi — narx/qoldiq/hisoblar eskirmasligi kerak
-  if (url.pathname.startsWith("/api/")) return;
-
-  event.respondWith(
-    caches.match(event.request).then((cached) => cached || fetch(event.request))
-  );
-});
+// Fetch listener yo'q — brauzer har bir so'rovni oddiy tarmoq so'rovi sifatida
+// bajaradi, hech qanday maxsus kesh aralashmaydi.
