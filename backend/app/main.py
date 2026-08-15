@@ -98,6 +98,51 @@ async def _get_default_currency_id(token: str) -> "str | None":
     return result["id"]
 
 
+# MoySklad har bir yangi hisobda avtomatik yaratadigan standart "Цена продажи"
+# narx turining externalCode'i — hisoblar orasida barqaror qiymat (tizim tomonidan
+# beriladi), shuning uchun nomi o'zgartirilgan yoki tarjima qilingan taqdirda ham
+# ishonchli aniqlash uchun ishlatiladi.
+_DEFAULT_PRICE_TYPE_EXTERNAL_CODE = "cbcf493b-55bc-11d9-848a-00112f43529a"
+
+
+async def _get_default_price_type_id(token: str) -> "str | None":
+    """Tovarlarning bir nechta narx turi bo'lishi mumkin (masalan "Цена продажи"
+    dollarda, kassir o'zi qo'shgan "Do'kon Sotov" so'mda) — POS uchun har doim
+    MoySklad'ning standart "Цена продажи" turini ishlatish kerak, aks holda
+    qaysi narx tasodifan array'da birinchi kelsa, o'sha noto'g'ri olinadi.
+    """
+
+    async def loader():
+        data = await ms_request("GET", "/context/companysettings", token=token)
+        price_types = data.get("priceTypes") or []
+        match = next(
+            (
+                pt
+                for pt in price_types
+                if pt.get("externalCode") == _DEFAULT_PRICE_TYPE_EXTERNAL_CODE
+                or pt.get("name") == "Цена продажи"
+            ),
+            None,
+        )
+        return {"id": match["id"] if match else None}
+
+    result = await _cached("default_price_type", token, loader)
+    return result["id"]
+
+
+def _pick_sale_price(sale_prices: list, default_price_type_id: "str | None") -> "dict | None":
+    if not sale_prices:
+        return None
+    if default_price_type_id:
+        for sp in sale_prices:
+            price_type = sp.get("priceType") or {}
+            if price_type.get("id") == default_price_type_id:
+                return sp
+    # Standart tur topilmasa (masalan kompaniya uni o'chirib tashlagan bo'lsa),
+    # eng yomon holatda ham xato chiqmasligi uchun birinchi narxga qaytamiz.
+    return sale_prices[0]
+
+
 # ---------------------------------------------------------------------------
 # Autentifikatsiya
 # ---------------------------------------------------------------------------
@@ -138,13 +183,16 @@ async def me(session: dict = Depends(get_current_session)):
 # ---------------------------------------------------------------------------
 
 
-def _assortment_row_to_item(row: dict) -> dict:
+def _assortment_row_to_item(row: dict, default_price_type_id: "str | None") -> dict:
     sale_prices = row.get("salePrices") or []
-    price = (sale_prices[0]["value"] / 100) if sale_prices else 0
-    # Har bir narx MoySklad'da o'zining valyutasiga ega bo'lishi mumkin (masalan ba'zi
-    # tovarlar dollarda, ba'zilari so'mda kiritilgan bo'lishi mumkin) — buni frontend'ga
-    # uzatamiz, shunda kassir tovar narxini to'g'ri valyutada ko'radi/tahrirlaydi.
-    price_currency = sale_prices[0].get("currency") if sale_prices else None
+    # ESLATMA (haqiqiy hisobda tekshirilgan): bir tovarda bir nechta narx turi
+    # bo'lishi mumkin (masalan "Цена продажи" dollarda, do'kon o'zi qo'shgan
+    # boshqa tur so'mda) — array'dagi BIRINCHI narxni emas, aynan MoySklad'ning
+    # standart "Цена продажи" turini olish kerak, aks holda tasodifiy noto'g'ri
+    # valyutadagi narx tanlanadi.
+    chosen = _pick_sale_price(sale_prices, default_price_type_id)
+    price = (chosen["value"] / 100) if chosen else 0
+    price_currency = chosen.get("currency") if chosen else None
     price_currency_id = _id_from_href(price_currency["meta"]["href"]) if price_currency else None
     return {
         "id": row.get("id"),
@@ -170,9 +218,11 @@ async def search_products(q: str = Query("", alias="q"), token: str = Depends(ge
     shuning uchun har bir maydon uchun alohida so'rov yuborilib, natijalar
     birlashtiriladi (OR semantikasini qo'lda hosil qilish).
     """
+    default_price_type_id = await _get_default_price_type_id(token)
+
     if not q:
         data = await ms_request("GET", "/entity/assortment", token=token, params={"limit": 50})
-        return {"items": [_assortment_row_to_item(r) for r in data.get("rows", [])]}
+        return {"items": [_assortment_row_to_item(r, default_price_type_id) for r in data.get("rows", [])]}
 
     results = await asyncio.gather(
         *[
@@ -186,7 +236,7 @@ async def search_products(q: str = Query("", alias="q"), token: str = Depends(ge
         for row in data.get("rows", []):
             merged[row["id"]] = row
 
-    return {"items": [_assortment_row_to_item(r) for r in merged.values()]}
+    return {"items": [_assortment_row_to_item(r, default_price_type_id) for r in merged.values()]}
 
 
 @app.get("/api/products/scan")
@@ -202,7 +252,8 @@ async def scan_product(code: str = Query(..., min_length=1), token: str = Depend
     rows = data.get("rows", [])
     if not rows:
         return {"item": None}
-    return {"item": _assortment_row_to_item(rows[0])}
+    default_price_type_id = await _get_default_price_type_id(token)
+    return {"item": _assortment_row_to_item(rows[0], default_price_type_id)}
 
 
 @app.get("/api/counterparties")
