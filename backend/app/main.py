@@ -52,6 +52,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def _no_cache_headers(request, call_next):
+    """Ilova faol rivojlantirilmoqda — brauzer/Telegram WebView/oraliq keshlar
+    hech qanday javobni saqlab qolmasligi kerak, aks holda kod yangilansa ham
+    foydalanuvchi eskirgan versiyani ko'raverishi mumkin (bu allaqachon Service
+    Worker bilan bir marta sodir bo'lgan edi). Shu sabab HAR BIR javobga eng
+    qattiq "keshlama" ko'rsatmasi qo'yiladi."""
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    return response
+
 # Oddiy xotiradagi kesh: hisoblar/tashkilotlar/omborlar har so'rovda o'zgarmaydi,
 # shuning uchun kassirning har bir checkout ekraniga kirishida MoySklad'ga urilmaymiz.
 # Kalitga token qo'shilgan — turli kassirlar (turli MoySklad hisoblari/huquqlari)
