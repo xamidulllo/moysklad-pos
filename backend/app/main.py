@@ -511,7 +511,16 @@ async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_to
         selected_currency_id = _id_from_href(payload.currency_meta.get("href", ""))
         default_currency_id = await _get_default_currency_id(token)
         if selected_currency_id != default_currency_id:
-            document_rate = {"value": payload.exchange_rate, "currency": {"meta": payload.currency_meta}}
+            # MUHIM (MoySklad interfeysida vizual tasdiqlangan): API'ning
+            # "rate.value" maydoni kassir kiritgan "1 bazaviy = X hujjat valyutasi"
+            # (masalan "1 dollar = 12000 so'm") yo'nalishining TESKARISIDA
+            # saqlanadi. MoySklad o'z interfeysida "1 USD = 12 000 UZS" to'g'ri
+            # ko'rsatishi uchun bu yerga 1/12000 yuborilishi kerak — kassir
+            # kiritgan raqamning o'zi emas.
+            document_rate = {
+                "value": 1 / payload.exchange_rate,
+                "currency": {"meta": payload.currency_meta},
+            }
 
     # 1) Заказ покупателя (customerorder) — POS-sotuvning boshlang'ich hujjati.
     # Otgruzka va to'lov ikkalasi ham shunga bog'lanadi (pastga qarang).
