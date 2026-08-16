@@ -179,9 +179,16 @@ async def _get_required_order_attributes(token: str) -> list:
     """
 
     async def loader():
-        data = await ms_request(
-            "GET", "/entity/customerorder/metadata/attributes", token=token, params={"limit": 1000}
-        )
+        try:
+            data = await ms_request(
+                "GET", "/entity/customerorder/metadata/attributes", token=token, params={"limit": 1000}
+            )
+        except HTTPException:
+            # Ba'zi MoySklad tariflarida qo'shimcha maydonlar funksiyasi umuman
+            # yo'q — bunday hisoblarda so'rovning o'zi xato qaytaradi (masalan
+            # "Тарифное ограничение"). Bu checkout'ni butunlay to'xtatmasligi
+            # kerak — shunchaki majburiy maydon yo'q deb hisoblanadi.
+            return {"items": []}
         items = []
         for attr in data.get("rows", []):
             if not attr.get("required"):
@@ -197,9 +204,12 @@ async def _get_required_order_attributes(token: str) -> list:
                 custom_entity_id = _id_from_href(custom_entity_href) if custom_entity_href else None
                 if not custom_entity_id:
                     continue
-                dict_data = await ms_request(
-                    "GET", f"/entity/customentity/{custom_entity_id}", token=token, params={"limit": 100}
-                )
+                try:
+                    dict_data = await ms_request(
+                        "GET", f"/entity/customentity/{custom_entity_id}", token=token, params={"limit": 100}
+                    )
+                except HTTPException:
+                    continue
                 options = dict_data.get("rows", [])
                 if not options:
                     continue
@@ -448,6 +458,7 @@ async def get_currencies(token: str = Depends(get_current_token)):
                     "id": r["id"],
                     "meta": r["meta"],
                     "name": r.get("name") or r.get("isoCode") or "Valyuta",
+                    "iso_code": r.get("isoCode"),
                     "is_default": bool(r.get("default")),
                 }
                 for r in data.get("rows", [])

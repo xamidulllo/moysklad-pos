@@ -388,28 +388,6 @@ main {
   font-size: 0.9rem;
 }
 
-.currency-toggle {
-  flex-shrink: 0;
-  display: flex;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.currency-toggle button {
-  border: none;
-  background: var(--surface-2);
-  color: var(--text-dim);
-  font-size: 0.75rem;
-  padding: 8px 10px;
-}
-
-.currency-toggle button.active {
-  background: var(--accent);
-  color: #052e16;
-  font-weight: 700;
-}
-
 .summary-bar {
   display: flex;
   justify-content: space-between;

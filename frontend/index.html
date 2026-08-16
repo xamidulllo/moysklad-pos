@@ -75,8 +75,18 @@
       <section id="view-cart" class="view">
         <h2 class="view-title">Savat</h2>
         <div id="cartEmpty" class="hint">Savat hozircha bo'sh</div>
-        <!-- Har bir chet el valyutasi uchun alohida kurs maydoni shu yerda dinamik hosil bo'ladi -->
-        <div id="currencyRatesPanel"></div>
+
+        <!-- Butun savat uchun BITTA valyuta — narxlarni turli valyutada kiritish
+             chalkashlikka olib kelgani uchun soddalashtirildi -->
+        <div class="form-group">
+          <label for="cartCurrencySelect">Savat valyutasi</label>
+          <select id="cartCurrencySelect"></select>
+        </div>
+        <div class="form-group hidden" id="cartRateGroup">
+          <label id="cartRateLabel" for="cartRateInput">Kurs</label>
+          <input type="number" id="cartRateInput" inputmode="decimal" step="0.01" min="0" placeholder="Masalan: 12700" />
+        </div>
+
         <div id="cartList" class="cart-list"></div>
         <div class="summary-bar">
           <span>Jami:</span>
@@ -88,16 +98,6 @@
       <!-- 3-EKRAN: To'lov -->
       <section id="view-checkout" class="view">
         <h2 class="view-title">To'lov</h2>
-
-        <div class="form-group" id="orgGroup">
-          <label for="orgSelect">Tashkilot</label>
-          <select id="orgSelect"></select>
-        </div>
-
-        <div class="form-group" id="storeGroup">
-          <label for="storeSelect">Ombor</label>
-          <select id="storeSelect"></select>
-        </div>
 
         <div class="form-group">
           <label for="agentSearch">Mijoz</label>
@@ -123,14 +123,6 @@
             <label for="accountSelect">To'lov hisobi</label>
             <select id="accountSelect">
               <option value="">Hisoblar yuklanmoqda...</option>
-            </select>
-          </div>
-
-          <div class="form-group">
-            <label for="docTypeSelect">Hujjat turi</label>
-            <select id="docTypeSelect">
-              <option value="cashin">💵 Naqd (Приходный кассовый ордер)</option>
-              <option value="paymentin">🏦 Bank (Входящий платёж)</option>
             </select>
           </div>
 
