@@ -157,6 +157,64 @@ def _pick_sale_price(sale_prices: list, default_price_type_id: "str | None") -> 
     return sale_prices[0]
 
 
+_YES_LIKE_NAMES = ("ha", "да", "yes", "true", "тўғри", "to'g'ri")
+
+
+async def _get_required_order_attributes(token: str) -> list:
+    """Ba'zi MoySklad hisoblarida buyurtma (customerorder) uchun qo'shimcha
+    maydonlar (custom attributes) "majburiy" deb belgilangan bo'ladi — bunday
+    hisoblarda ularsiz order yaratib bo'lmaydi (MoySklad butunlay rad etadi).
+    Bu funksiya har doim shu hisobning HAQIQIY majburiy maydonlarini o'zi
+    aniqlab, ularga mantiqiy standart qiymat beradi — hech qanday maydon nomi
+    yoki ID kodda qattiq yozilmagan, shuning uchun boshqa MoySklad hisobida
+    boshqa (yoki hech qanday) majburiy maydon bo'lsa ham avtomatik moslashadi.
+
+    Faqat ikki turdagi maydon uchun ishonchli standart tanlanadi:
+      - "boolean" — True qilib qo'yiladi;
+      - "customentity" (lug'atdan tanlash, masalan "Ha"/"Yo'q") — "Ha"ga
+        o'xshash nomli variant, aks holda yagona/birinchi variant tanlanadi.
+    Boshqa turdagi (matn, sana va h.k.) majburiy maydonlar uchun ishonchli
+    standart yo'q — ular o'tkazib yuboriladi (kerak bo'lsa administrator shu
+    maydonni "majburiy emas" qilishi kerak bo'ladi).
+    """
+
+    async def loader():
+        data = await ms_request(
+            "GET", "/entity/customerorder/metadata/attributes", token=token, params={"limit": 1000}
+        )
+        items = []
+        for attr in data.get("rows", []):
+            if not attr.get("required"):
+                continue
+            attr_meta = attr["meta"]
+
+            if attr.get("type") == "boolean":
+                items.append({"meta": attr_meta, "value": True})
+                continue
+
+            if attr.get("type") == "customentity":
+                custom_entity_href = (attr.get("customEntityMeta") or {}).get("href", "")
+                custom_entity_id = _id_from_href(custom_entity_href) if custom_entity_href else None
+                if not custom_entity_id:
+                    continue
+                dict_data = await ms_request(
+                    "GET", f"/entity/customentity/{custom_entity_id}", token=token, params={"limit": 100}
+                )
+                options = dict_data.get("rows", [])
+                if not options:
+                    continue
+                chosen = next(
+                    (o for o in options if o.get("name", "").strip().lower() in _YES_LIKE_NAMES),
+                    options[0],
+                )
+                items.append({"meta": attr_meta, "value": {"meta": chosen["meta"], "name": chosen.get("name")}})
+
+        return {"items": items}
+
+    result = await _cached("required_order_attributes", token, loader)
+    return result["items"]
+
+
 # ---------------------------------------------------------------------------
 # Autentifikatsiya
 # ---------------------------------------------------------------------------
@@ -429,6 +487,14 @@ async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_to
     }
     if payload.comment:
         order_body["description"] = payload.comment
+
+    # Ba'zi hisoblarda buyurtma uchun majburiy qo'shimcha maydonlar (custom
+    # attributes) sozlangan bo'ladi — ularsiz MoySklad order yaratishni rad
+    # etadi. Bu yerda ular avtomatik topilib, mantiqiy standart qiymat bilan
+    # to'ldiriladi (real hisobda tekshirilgan).
+    required_attrs = await _get_required_order_attributes(token)
+    if required_attrs:
+        order_body["attributes"] = required_attrs
     if payload.project_meta:
         order_body["project"] = {"meta": payload.project_meta}
     order = await ms_request("POST", "/entity/customerorder", token=token, json=order_body)
