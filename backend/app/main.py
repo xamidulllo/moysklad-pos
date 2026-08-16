@@ -11,6 +11,7 @@ Marshrutlar:
   GET  /api/accounts        — tashkilot hisoblarini olish (entity/organization/{id}/accounts)
   GET  /api/context         — tashkilotlar va omborlar ro'yxati (entity/organization, entity/store)
   GET  /api/currencies      — tashkilotda sozlangan valyutalar ro'yxati (entity/currency)
+  GET  /api/projects        — loyihalar ro'yxati (entity/project)
   POST /api/checkout        — customerorder -> demand -> to'lov (cashin/paymentin) zanjirini yaratadi
 
 Har bir /api/* (login'dan tashqari) marshrut joriy kassir sessiyasini talab qiladi —
@@ -293,6 +294,21 @@ async def create_counterparty(payload: CounterpartyCreate, token: str = Depends(
     return {"id": row["id"], "meta": row["meta"], "name": row["name"]}
 
 
+@app.get("/api/projects")
+async def get_projects(token: str = Depends(get_current_token)):
+    """Buyurtmaga biriktiriladigan loyihalar (Проекты) ro'yxati — real API'da tekshirilgan."""
+
+    async def loader():
+        data = await ms_request("GET", "/entity/project", token=token, params={"limit": 100})
+        return {
+            "items": [
+                {"id": r["id"], "meta": r["meta"], "name": r["name"]} for r in data.get("rows", [])
+            ]
+        }
+
+    return await _cached("projects", token, loader)
+
+
 CASH_KEYWORDS = ("kassa", "касс", "нал", "naqd", "cash")
 
 
@@ -413,6 +429,8 @@ async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_to
     }
     if payload.comment:
         order_body["description"] = payload.comment
+    if payload.project_meta:
+        order_body["project"] = {"meta": payload.project_meta}
     order = await ms_request("POST", "/entity/customerorder", token=token, json=order_body)
     order_sum = order.get("sum", 0)
 
@@ -428,6 +446,8 @@ async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_to
     }
     if payload.comment:
         demand_body["description"] = payload.comment
+    if payload.project_meta:
+        demand_body["project"] = {"meta": payload.project_meta}
     try:
         demand = await ms_request("POST", "/entity/demand", token=token, json=demand_body)
     except HTTPException:

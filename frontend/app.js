@@ -16,6 +16,7 @@ const API = {
   accounts: "/api/accounts",
   context: "/api/context",
   currencies: "/api/currencies",
+  projects: "/api/projects",
   checkout: "/api/checkout",
 };
 
@@ -36,13 +37,21 @@ const state = {
   selectedStore: null,
   selectedAgent: null, // { meta, name }
   selectedAccount: null, // accounts ro'yxatidagi element
+  projects: [], // [{id, meta, name}] — entity/project ro'yxati
+  selectedProject: null,
 };
 
 // ---------------- Yordamchi funksiyalar ----------------
 
-function formatSom(value) {
+// Tashkilotning HAQIQIY bazaviy (учетная) valyutasi har doim ham "so'm" bo'lavermaydi —
+// ba'zi hisoblarda bu doller yoki boshqa valyuta bo'lishi mumkin (real hisobda
+// tekshirilgan). Shu sabab summalar hech qachon "so'm" deb qattiq yozilmaydi,
+// har doim /api/currencies'dan kelgan haqiqiy bazaviy valyuta nomi ishlatiladi.
+function formatMoney(value) {
   const rounded = Math.round(value * 100) / 100;
-  return rounded.toLocaleString("ru-RU").replace(/,/g, " ") + " so'm";
+  const def = defaultCurrency();
+  const label = def ? def.name : "";
+  return rounded.toLocaleString("ru-RU").replace(/,/g, " ") + (label ? " " + label : "");
 }
 
 function debounce(fn, delay) {
@@ -155,7 +164,7 @@ function renderProducts(items) {
         <div class="product-info">
           <div class="product-name">${escapeHtml(p.name)}</div>
           <div class="product-meta">${escapeHtml(p.code || p.article || "")}</div>
-          <div class="product-price">${formatSom(p.price)}</div>
+          <div class="product-price">${formatMoney(p.price)}</div>
         </div>
         <button class="add-btn" data-idx="${idx}" type="button">+</button>
       </div>`
@@ -344,7 +353,7 @@ function renderCart() {
               <span class="qty-value">${item.quantity}</span>
               <button class="qty-btn" data-id="${item.id}" data-delta="1" type="button">+</button>
             </div>
-            <div class="line-total">${formatSom(item.price * item.quantity)}</div>
+            <div class="line-total">${formatMoney(item.price * item.quantity)}</div>
           </div>
           <div class="cart-item-price-row">
             <input
@@ -386,8 +395,8 @@ function renderCart() {
   }
 
   const total = cartTotal();
-  document.getElementById("cartTotal").textContent = formatSom(total);
-  document.getElementById("checkoutTotal").textContent = formatSom(total);
+  document.getElementById("cartTotal").textContent = formatMoney(total);
+  document.getElementById("checkoutTotal").textContent = formatMoney(total);
 }
 
 document.getElementById("toCheckoutBtn").addEventListener("click", () => {
@@ -403,11 +412,16 @@ async function loadCheckoutData() {
   if (checkoutDataLoaded) return;
   try {
     showLoading(true);
-    const [context, accountsData] = await Promise.all([apiGet(API.context), apiGet(API.accounts)]);
+    const [context, accountsData, projectsData] = await Promise.all([
+      apiGet(API.context),
+      apiGet(API.accounts),
+      apiGet(API.projects),
+    ]);
 
     state.organizations = context.organizations || [];
     state.stores = context.stores || [];
     state.accounts = accountsData.items || [];
+    state.projects = projectsData.items || [];
 
     fillSelect("orgSelect", "orgGroup", state.organizations, (o) => {
       state.selectedOrg = o;
@@ -417,6 +431,7 @@ async function loadCheckoutData() {
       state.selectedStore = s;
     });
     fillAccountSelect();
+    fillProjectSelect();
 
     checkoutDataLoaded = true;
   } catch (err) {
@@ -445,6 +460,28 @@ function fillSelect(selectId, groupId, list, onSelect) {
   }
 
   select.onchange = () => onSelect(list[Number(select.value)]);
+}
+
+// Loyiha ixtiyoriy — org/store/account'dan farqli, standart tanlov "belgilanmagan"
+// bo'lishi kerak (birinchi loyihani avtomatik tanlamaymiz), shuning uchun fillSelect
+// o'rniga alohida funksiya.
+function fillProjectSelect() {
+  const select = document.getElementById("projectSelect");
+  const group = select.closest(".form-group");
+
+  if (!state.projects.length) {
+    group.classList.add("hidden");
+    return;
+  }
+
+  group.classList.remove("hidden");
+  select.innerHTML =
+    `<option value="">— Belgilanmagan —</option>` +
+    state.projects.map((p, idx) => `<option value="${idx}">${escapeHtml(p.name)}</option>`).join("");
+  state.selectedProject = null;
+  select.onchange = () => {
+    state.selectedProject = select.value === "" ? null : state.projects[Number(select.value)];
+  };
 }
 
 function fillAccountSelect() {
@@ -614,6 +651,7 @@ async function handlePay() {
     })),
     is_debt: isDebt,
     comment: document.getElementById("orderComment").value.trim() || null,
+    project_meta: state.selectedProject ? state.selectedProject.meta : null,
   };
 
   if (!isDebt) {
@@ -654,6 +692,9 @@ function resetAfterPayment() {
   document.getElementById("paymentMoment").value = "";
   document.getElementById("debtCheckbox").checked = false;
   document.getElementById("paymentFieldsGroup").classList.remove("hidden");
+  state.selectedProject = null;
+  const projectSelect = document.getElementById("projectSelect");
+  if (projectSelect) projectSelect.value = "";
   // Diqqat: kurslarni (state.exchangeRates) tozalamaymiz — bir xil kunda ketma-ket
   // sotuvlar uchun kassir har safar qayta kiritmasin.
   renderCart();

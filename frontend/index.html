@@ -80,7 +80,7 @@
         <div id="cartList" class="cart-list"></div>
         <div class="summary-bar">
           <span>Jami:</span>
-          <span id="cartTotal">0 so'm</span>
+          <span id="cartTotal">0</span>
         </div>
         <button id="toCheckoutBtn" class="primary-btn" type="button" disabled>Davom etish</button>
       </section>
@@ -144,13 +144,20 @@
         </div>
 
         <div class="form-group">
+          <label for="projectSelect">Loyiha / Проект (ixtiyoriy)</label>
+          <select id="projectSelect">
+            <option value="">— Belgilanmagan —</option>
+          </select>
+        </div>
+
+        <div class="form-group">
           <label for="orderComment">Izoh (ixtiyoriy)</label>
           <textarea id="orderComment" rows="2" placeholder="Buyurtma haqida izoh..."></textarea>
         </div>
 
         <div class="summary-bar">
           <span>To'lov summasi:</span>
-          <span id="checkoutTotal">0 so'm</span>
+          <span id="checkoutTotal">0</span>
         </div>
 
         <button id="payBtn" class="primary-btn" type="button">To'lash</button>

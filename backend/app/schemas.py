@@ -28,6 +28,7 @@ class CheckoutRequest(BaseModel):
     payment_moment: Optional[str] = Field(
         None, description="To'lov hujjati sanasi/vaqti, masalan '2026-08-01 09:30:00' (bo'sh bo'lsa — hozirgi vaqt)"
     )
+    project_meta: Optional[dict] = Field(None, description="entity/project meta obyekti (ixtiyoriy)")
 
     @model_validator(mode="after")
     def _require_payment_fields_unless_debt(self):
