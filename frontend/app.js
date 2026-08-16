@@ -412,35 +412,44 @@ let checkoutDataLoaded = false;
 
 async function loadCheckoutData() {
   if (checkoutDataLoaded) return;
-  try {
-    showLoading(true);
-    const [context, accountsData, projectsData] = await Promise.all([
-      apiGet(API.context),
-      apiGet(API.accounts),
-      apiGet(API.projects),
-    ]);
+  showLoading(true);
 
+  // Har biri ALOHIDA (bittalab) yuklanadi — birontasi xato bersa (masalan
+  // loyihalar ba'zi MoySklad tariflarida cheklangan bo'lishi mumkin), qolgan
+  // qismlar baribir to'g'ri ishlashda davom etishi kerak.
+  try {
+    const context = await apiGet(API.context);
     state.organizations = context.organizations || [];
     state.stores = context.stores || [];
-    state.accounts = accountsData.items || [];
-    state.projects = projectsData.items || [];
-
-    // Tashkilot tanlovi kassirga ko'rsatilmaydi — har doim birinchisi (odatda
-    // yagona) avtomatik ishlatiladi, aniq so'ralgan soddalashtirish.
-    state.selectedOrg = state.organizations[0] || null;
-    fillAccountSelect();
-
+    fillSelect("orgSelect", "orgGroup", state.organizations, (o) => {
+      state.selectedOrg = o;
+      fillAccountSelect(); // hisoblar tashkilotga bog'liq — tashkilot almashsa qayta filtrlanadi
+    });
     fillSelect("storeSelect", "storeGroup", state.stores, (s) => {
       state.selectedStore = s;
     });
-    fillProjectSelect();
-
-    checkoutDataLoaded = true;
   } catch (err) {
-    showToast("Sozlamalarni yuklashda xatolik: " + extractErrorMessage(err), true);
-  } finally {
-    showLoading(false);
+    showToast("Tashkilot/ombor yuklashda xatolik: " + extractErrorMessage(err), true);
   }
+
+  try {
+    const accountsData = await apiGet(API.accounts);
+    state.accounts = accountsData.items || [];
+    fillAccountSelect();
+  } catch (err) {
+    showToast("Hisoblarni yuklashda xatolik: " + extractErrorMessage(err), true);
+  }
+
+  try {
+    const projectsData = await apiGet(API.projects);
+    state.projects = projectsData.items || [];
+    fillProjectSelect();
+  } catch (err) {
+    /* Loyihalar ixtiyoriy — xato chiqsa jim o'tkaziladi, checkout to'xtamaydi */
+  }
+
+  checkoutDataLoaded = true;
+  showLoading(false);
 }
 
 function fillSelect(selectId, groupId, list, onSelect) {

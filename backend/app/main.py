@@ -367,7 +367,14 @@ async def get_projects(token: str = Depends(get_current_token)):
     """Buyurtmaga biriktiriladigan loyihalar (Проекты) ro'yxati — real API'da tekshirilgan."""
 
     async def loader():
-        data = await ms_request("GET", "/entity/project", token=token, params={"limit": 100})
+        try:
+            data = await ms_request("GET", "/entity/project", token=token, params={"limit": 100})
+        except HTTPException:
+            # Ba'zi MoySklad tariflarida bu funksiya cheklangan bo'lishi mumkin —
+            # bunday holda checkout ekranini butunlay to'xtatmasdan, shunchaki
+            # loyiha tanlovi yashirin qoladi (aynan attribute'lar uchun qilingan
+            # fallback bilan bir xil naqsh).
+            return {"items": []}
         return {
             "items": [
                 {"id": r["id"], "meta": r["meta"], "name": r["name"]} for r in data.get("rows", [])
