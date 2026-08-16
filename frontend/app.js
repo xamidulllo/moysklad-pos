@@ -461,14 +461,11 @@ function fillSelect(selectId, groupId, list, onSelect) {
     return;
   }
 
+  // Diqqat: variant bitta bo'lsa ham maydon YASHIRILMAYDI — kassir nima
+  // tanlanganini har doim aniq ko'rib turishi kerak (kassir bilan kelishilgan).
+  group.classList.remove("hidden");
   select.innerHTML = list.map((item, idx) => `<option value="${idx}">${escapeHtml(item.name)}</option>`).join("");
   onSelect(list[0]);
-
-  if (list.length === 1) {
-    group.classList.add("hidden");
-  } else {
-    group.classList.remove("hidden");
-  }
 
   select.onchange = () => onSelect(list[Number(select.value)]);
 }
