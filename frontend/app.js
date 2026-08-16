@@ -21,9 +21,9 @@ const API = {
 };
 
 const state = {
-  // Har bir cart elementi: { id, meta, name, quantity, price /* har doim
-  // tashkilotning bazaviy valyutasida, hisoblangan */, rawPrice /* kassir
-  // kiritgan asl qiymat, SAVAT valyutasida (state.cartCurrencyId) */ }
+  // Har bir cart elementi: { id, meta, name, quantity, price /* JORIY SAVAT
+  // VALYUTASIDA (state.cartCurrencyId), hech qanday konvertatsiyasiz to'g'ridan-
+  // to'g'ri MoySklad'ga yuboriladigan raqam */ }
   //
   // MUHIM: narx har bir tovar uchun ALOHIDA valyutada bo'lishi chalkashlikka
   // olib kelgani uchun (haqiqiy foydalanishda tasdiqlangan) butun savat uchun
@@ -34,7 +34,7 @@ const state = {
   stores: [],
   currencies: [], // [{id, meta, name, is_default}] — tashkilotda sozlangan barcha valyutalar
   cartCurrencyId: null, // hozir tanlangan savat valyutasi (state.currencies dagi id)
-  cartRate: 0, // "1 cartCurrencyId = ? bazaviy valyuta" (faqat cartCurrencyId bazaviy bo'lmasa kerak)
+  cartRate: 0, // "1 bazaviy valyuta = ? cartCurrencyId" (faqat cartCurrencyId bazaviy bo'lmasa kerak)
   selectedOrg: null,
   selectedStore: null,
   selectedAgent: null, // { meta, name }
@@ -212,9 +212,10 @@ function availableCurrencies() {
   return state.currencies.filter((c) => c.iso_code !== "RUB");
 }
 
-// Joriy savat valyutasi bazaviydan farq qilsa, shu kurs ishlatiladi (0 bo'lsa —
-// kassir hali kiritmagan, bu holda checkout bloklanadi, hech qachon "1" ga
-// jim ravishda tushib qolmaydi — aynan shu sababdan noto'g'ri summalar chiqqan edi).
+// "1 BAZAVIY valyuta = ? savat valyutasi" (masalan "1 dollar = 12000 so'm") —
+// bu yo'nalish kassir bilan aniq kelishilgan: chet el valyutasi (dollar) odatda
+// "qimmat" bo'lgani uchun "1 so'm = ? dollar" tarzida o'ylash tabiiy emas.
+// 0 bo'lsa — kassir hali kiritmagan, bu holda checkout bloklanadi.
 function currentCartRate() {
   const def = defaultCurrency();
   if (!def || state.cartCurrencyId === def.id) return 1;
@@ -232,20 +233,26 @@ async function loadCurrencies() {
   }
 }
 
+// MUHIM (real MoySklad API'da to'g'ridan-to'g'ri tekshirilgan): hujjatga
+// yuboriladigan narx hujjatning O'Z valyutasida bo'lishi kerak — MoySklad uni
+// bazaviy valyutaga hech qanday avtomatik konvertatsiya qilmaydi. Shu sabab
+// "item.price" endi doim JORIY SAVAT VALYUTASIDA saqlanadi (masalan so'mda),
+// alohida "bazaviy ekvivalent" hisoblashning hojati yo'q — checkout paytida
+// backend shu raqamni to'g'ridan-to'g'ri, shu valyuta bilan birga yuboradi.
 function addToCart(product) {
   const existing = state.cart.find((i) => i.id === product.id);
   if (existing) {
     existing.quantity += 1;
   } else {
-    // Tovar MoySklad narxi har doim bazaviy valyutada — savat valyutasi
-    // bazaviydan farq qilsa, joriy kursga ko'ra darhol o'giriladi.
+    // Tovarning MoySklad'dagi o'z narxi ("Цена продажи") har doim bazaviy
+    // valyutada — savat valyutasi bazaviydan farq qilsa, joriy kursga ko'ra
+    // darhol o'giriladi (faqat qo'shilayotgan paytdagi qulaylik uchun).
     const rate = currentCartRate();
     state.cart.push({
       id: product.id,
       meta: product.meta,
       name: product.name,
-      price: product.price,
-      rawPrice: rate > 0 ? product.price / rate : product.price,
+      price: rate !== 1 ? product.price * rate : product.price,
       quantity: 1,
     });
   }
@@ -271,41 +278,44 @@ function removeFromCart(id) {
 // Savat/checkout summasi kassir TANLAGAN valyutada ko'rsatiladi — bu aynan
 // kassir kiritgan/kutgan raqam, konvertatsiya haqida o'ylash shart emas.
 function cartTotal() {
-  return state.cart.reduce((sum, i) => sum + i.rawPrice * i.quantity, 0);
+  return state.cart.reduce((sum, i) => sum + i.price * i.quantity, 0);
 }
 
-function setItemRawPrice(id, rawValue) {
+// Kassir yozgan narx to'g'ridan-to'g'ri JORIY SAVAT VALYUTASIDA saqlanadi —
+// hech qanday konvertatsiya kerak emas (MoySklad'ga aynan shu holida yuboriladi).
+function setItemPrice(id, value) {
   const item = state.cart.find((i) => i.id === id);
   if (!item) return;
-  const raw = Math.max(0, Number(rawValue) || 0);
-  item.rawPrice = raw;
-  item.price = raw * currentCartRate();
+  item.price = Math.max(0, Number(value) || 0);
   renderCart();
 }
 
-// Savat valyutasi almashtirilganda barcha tovarlarning bazaviy summasi saqlanib
-// qoladi — faqat KO'RSATILGAN (rawPrice) raqam yangi valyutaga moslab qayta hisoblanadi.
+// Savat valyutasi almashtirilganda (masalan so'm -> dollar) tovarlarning
+// HAQIQIY qiymati saqlanib qolishi uchun narxlari joriy kursga ko'ra qayta
+// hisoblanadi — aks holda xuddi shu raqam boshqa valyutada qolib, summasi
+// butunlay noto'g'ri chiqib qolardi.
 function setCartCurrency(currencyId) {
   if (state.cartCurrencyId === currencyId) return;
-  const oldRate = currentCartRate();
+  const def = defaultCurrency();
+  const wasForeign = Boolean(def) && state.cartCurrencyId !== def.id;
   state.cartCurrencyId = currencyId;
-  const newRate = currentCartRate();
-  state.cart.forEach((item) => {
-    const baseAmount = item.rawPrice * oldRate;
-    item.price = baseAmount;
-    item.rawPrice = newRate > 0 ? baseAmount / newRate : baseAmount;
-  });
+  const isForeign = Boolean(def) && currencyId !== def.id;
+  const rate = state.cartRate;
+
+  if (rate > 0 && wasForeign !== isForeign) {
+    state.cart.forEach((item) => {
+      item.price = wasForeign ? item.price / rate : item.price * rate;
+    });
+  }
   renderCartCurrencySelector();
   renderCart();
 }
 
+// Diqqat: kurs o'zgarganda savatdagi tovarlarning narxi qayta hisoblanmaydi —
+// ular allaqachon to'g'ri (o'sha) valyutada kiritilgan. Kurs faqat YANGI
+// qo'shiladigan tovarlar va yakuniy hujjatlar uchun ishlatiladi.
 function setCartRate(value) {
   state.cartRate = Math.max(0, Number(value) || 0);
-  const rate = currentCartRate();
-  state.cart.forEach((item) => {
-    item.price = item.rawPrice * rate;
-  });
-  renderCart();
 }
 
 // Savat ekranidagi valyuta tanlovi + (agar bazaviy bo'lmasa) kurs maydoni.
@@ -331,7 +341,9 @@ function renderCartCurrencySelector() {
   rateGroup.classList.toggle("hidden", !isForeign);
   if (isForeign) {
     const cur = currencyById(activeId);
-    rateLabel.textContent = `1 ${cur ? cur.name : ""} = ? ${def.name}`;
+    // "1 dollar = ? so'm" — bazaviy (kuchli) valyutadan tanlangan (kassir bilan
+    // aniq kelishilgan yo'nalish, aksincha emas).
+    rateLabel.textContent = `1 ${def.name} = ? ${cur ? cur.name : ""}`;
     rateInput.value = state.cartRate || "";
   }
 
@@ -366,7 +378,7 @@ function renderCart() {
               <span class="qty-value">${item.quantity}</span>
               <button class="qty-btn" data-id="${item.id}" data-delta="1" type="button">+</button>
             </div>
-            <div class="line-total">${formatCartMoney(item.rawPrice * item.quantity)}</div>
+            <div class="line-total">${formatCartMoney(item.price * item.quantity)}</div>
           </div>
           <div class="cart-item-price-row">
             <input
@@ -376,7 +388,7 @@ function renderCart() {
               inputmode="decimal"
               step="0.01"
               min="0"
-              value="${item.rawPrice}"
+              value="${item.price}"
             />
           </div>
         </div>`
@@ -392,7 +404,7 @@ function renderCart() {
     // "change" (input emas) — aks holda har bosilgan raqamda qayta render bo'lib,
     // maydon fokusdan chiqib ketardi
     cartList.querySelectorAll(".price-input").forEach((input) => {
-      input.addEventListener("change", () => setItemRawPrice(input.dataset.id, input.value));
+      input.addEventListener("change", () => setItemPrice(input.dataset.id, input.value));
     });
   }
 
@@ -663,6 +675,10 @@ async function handlePay() {
     is_debt: isDebt,
     comment: document.getElementById("orderComment").value.trim() || null,
     project_meta: state.selectedProject ? state.selectedProject.meta : null,
+    // Buyurtma/otgruzka HAM shu valyutada bo'lishi kerak (qarzga sotuvda ham) —
+    // shuning uchun bu maydonlar to'lov mavjud/yo'qligidan qat'i nazar yuboriladi.
+    currency_meta: cartCurrencyIsForeign && cartCurrency ? cartCurrency.meta : null,
+    exchange_rate: cartCurrencyIsForeign ? state.cartRate : 1,
   };
 
   if (!isDebt) {
@@ -671,8 +687,6 @@ async function handlePay() {
     // "Входящий платёж" ishlatiladi (shu bilan birga "cashin" MoySklad'da hisobga
     // umuman bog'lanmasligi ham aniqlangan edi — shuning uchun bu ham to'g'riroq).
     payload.document_type = "paymentin";
-    payload.currency_meta = cartCurrencyIsForeign && cartCurrency ? cartCurrency.meta : null;
-    payload.exchange_rate = cartCurrencyIsForeign ? state.cartRate : 1;
     payload.payment_moment = formatMomentForApi(document.getElementById("paymentMoment").value);
   }
 

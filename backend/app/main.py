@@ -485,6 +485,11 @@ async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_to
     if not payload.items:
         raise HTTPException(status_code=400, detail="Savat bo'sh")
 
+    # MUHIM (real API'da to'g'ridan-to'g'ri tekshirilgan): "positions[].price"
+    # hujjatning O'Z rate.currency birligida ishlatiladi — MoySklad uni bazaviy
+    # valyutaga hech qanday avtomatik konvertatsiya qilmaydi. Shu sabab frontend
+    # narxni to'g'ridan-to'g'ri kassir tanlagan valyutada yuboradi, bu yerda
+    # hech qanday qo'shimcha konvertatsiya qilinmaydi.
     positions = [
         {
             "quantity": item.quantity,
@@ -493,6 +498,20 @@ async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_to
         }
         for item in payload.items
     ]
+
+    # Kassir chet el valyutasini tanlagan bo'lsa, shu bitta "rate" BARCHA UCH
+    # hujjatga (buyurtma, otgruzka, to'lov) baravar qo'llaniladi — aks holda
+    # ular turli valyutada chiqib, chalkashlik yuzaga kelardi (haqiqiy
+    # foydalanishda aynan shu xato tasdiqlangan edi). MUHIM: MoySklad
+    # tashkilotning bazaviy (учетная) valyutasi uchun rate.value != 1
+    # yuborilsa xato 3007 bilan rad etadi — kurs faqat CHET EL valyutasidagi
+    # hisoblarda qo'llaniladi.
+    document_rate = None
+    if payload.exchange_rate and payload.exchange_rate > 0 and payload.currency_meta:
+        selected_currency_id = _id_from_href(payload.currency_meta.get("href", ""))
+        default_currency_id = await _get_default_currency_id(token)
+        if selected_currency_id != default_currency_id:
+            document_rate = {"value": payload.exchange_rate, "currency": {"meta": payload.currency_meta}}
 
     # 1) Заказ покупателя (customerorder) — POS-sotuvning boshlang'ich hujjati.
     # Otgruzka va to'lov ikkalasi ham shunga bog'lanadi (pastga qarang).
@@ -503,6 +522,8 @@ async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_to
         "positions": positions,
         "applicable": True,
     }
+    if document_rate:
+        order_body["rate"] = document_rate
     if payload.comment:
         order_body["description"] = payload.comment
 
@@ -528,6 +549,8 @@ async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_to
         "applicable": True,
         "customerOrder": {"meta": order["meta"]},
     }
+    if document_rate:
+        demand_body["rate"] = document_rate
     if payload.comment:
         demand_body["description"] = payload.comment
     if payload.project_meta:
@@ -564,24 +587,14 @@ async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_to
         "organizationAccount": {"meta": payload.account_meta},
         "operations": [{"meta": order["meta"], "linkedSum": order_sum}],
     }
+    if document_rate:
+        payment_body["rate"] = document_rate
 
     # Kartada oldindan to'langan holatlar uchun — to'lov sanasi/vaqti sotuv
     # vaqtidan farq qilishi mumkin, kassir buni qo'lda ko'rsata oladi
     # (real API'da tekshirilgan: "moment": "YYYY-MM-DD HH:MM:SS" formatida qabul qilinadi).
     if payload.payment_moment:
         payment_body["moment"] = payload.payment_moment
-
-    # Kassir qo'lda kiritgan valyuta kursini to'lov hujjatining "rate" obyektiga joylash.
-    # MUHIM: MoySklad tashkilotning bazaviy (учетная) valyutasi uchun rate.value != 1
-    # yuborilsa xato 3007 bilan rad etadi — kurs faqat CHET EL valyutasidagi hisoblarda ishlaydi.
-    if payload.exchange_rate and payload.exchange_rate > 0 and payload.currency_meta:
-        selected_currency_id = _id_from_href(payload.currency_meta.get("href", ""))
-        default_currency_id = await _get_default_currency_id(token)
-        if selected_currency_id != default_currency_id:
-            payment_body["rate"] = {
-                "value": payload.exchange_rate,
-                "currency": {"meta": payload.currency_meta},
-            }
 
     payment_endpoint = "/entity/cashin" if payload.document_type == "cashin" else "/entity/paymentin"
     try:
