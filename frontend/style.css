@@ -309,6 +309,21 @@ main {
   margin-top: 4px;
 }
 
+.stock-badge {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.stock-badge.stock-in {
+  color: var(--text-dim);
+}
+
+.stock-badge.stock-out {
+  color: var(--danger);
+}
+
 .add-btn {
   flex-shrink: 0;
   width: 40px;

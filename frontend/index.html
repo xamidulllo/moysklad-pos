@@ -52,6 +52,14 @@
     <main id="main">
       <!-- 1-EKRAN: Mahsulot qidirish va tanlash -->
       <section id="view-products" class="view active">
+        <!-- Ombor tanlovi shu yerda, qidiruvdan OLDIN turadi — chunki har bir
+             mahsulot qatoridagi "Omborda: N dona" belgisi aynan shu tanlangan
+             ombor bo'yicha ko'rsatiladi (boshqa ombordagi qoldiq bilan
+             aralashib ketmasligi uchun). -->
+        <div class="form-group" id="storeGroup">
+          <label for="storeSelect">Ombor</label>
+          <select id="storeSelect"></select>
+        </div>
         <div class="search-bar search-bar-row">
           <input
             type="search"
@@ -104,9 +112,12 @@
           <select id="orgSelect"></select>
         </div>
 
-        <div class="form-group" id="storeGroup">
-          <label for="storeSelect">Ombor</label>
-          <select id="storeSelect"></select>
+        <!-- Ombor endi Mahsulotlar ekranida tanlanadi (qoldiqni to'g'ri ko'rsatish
+             uchun) — bu yerda alohida takroriy tanlov yo'q, lekin kassir qaysi
+             ombor tanlanganini to'lov paytida ham aniq ko'rib turishi kerak. -->
+        <div class="form-group">
+          <label>Ombor</label>
+          <div id="checkoutStoreInfo" class="selected-chip">—</div>
         </div>
 
         <div class="form-group">

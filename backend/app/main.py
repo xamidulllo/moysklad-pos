@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .auth import create_session, delete_session, get_current_session, get_current_token
 from .bot import start_bot, stop_bot
-from .config import SESSION_COOKIE_NAME, SESSION_COOKIE_SECURE, SESSION_TTL_HOURS
+from .config import MOYSKLAD_BASE_URL, SESSION_COOKIE_NAME, SESSION_COOKIE_SECURE, SESSION_TTL_HOURS
 from .moysklad_client import exchange_credentials_for_token, ms_request
 from .schemas import CheckoutRequest, CounterpartyCreate, LoginRequest
 
@@ -341,11 +341,29 @@ def _assortment_row_to_item(row: dict, default_price_type_id: "str | None") -> d
         "price_currency_id": price_currency_id,
         "image_url": _extract_image_url(row),
         "type": (row.get("meta") or {}).get("type"),
+        # Faqat qidiruvga "store_id" berilganda keladi (pastga qarang) — aks
+        # holda MoySklad "stock" maydonini butunlay qaytarmaydi.
+        "stock": row.get("stock"),
     }
 
 
+def _stock_params(store_id: "str | None") -> dict:
+    """"store_id" berilganda MoySklad javobiga o'sha ombordagi ANIQ qoldiq
+    ("stock") maydonini qo'shib beradi (real API'da tekshirilgan:
+    "entity/assortment"ga "stockStore=<ombor href>" berilsa, har bir tovar
+    aynan shu ombor bo'yicha qoldig'i bilan qaytadi — umumiy/boshqa
+    omborlardagi qoldiq bilan aralashib ketmaydi)."""
+    if not store_id:
+        return {}
+    return {"stockStore": f"{MOYSKLAD_BASE_URL}/entity/store/{store_id}"}
+
+
 @app.get("/api/products")
-async def search_products(q: str = Query("", alias="q"), token: str = Depends(get_current_token)):
+async def search_products(
+    q: str = Query("", alias="q"),
+    store_id: str | None = Query(None),
+    token: str = Depends(get_current_token),
+):
     """Mahsulotlarni nomi, kodi yoki artikuli bo'yicha qidiradi.
 
     ESLATMA (real API'da tekshirilgan): "entity/assortment" endpoint'i "search"
@@ -357,10 +375,14 @@ async def search_products(q: str = Query("", alias="q"), token: str = Depends(ge
     birlashtiriladi (OR semantikasini qo'lda hosil qilish).
     """
     default_price_type_id = await _get_default_price_type_id(token)
+    stock_params = _stock_params(store_id)
 
     if not q:
         data = await ms_request(
-            "GET", "/entity/assortment", token=token, params={"limit": 50, "expand": "images"}
+            "GET",
+            "/entity/assortment",
+            token=token,
+            params={"limit": 50, "expand": "images", **stock_params},
         )
         return {"items": [_assortment_row_to_item(r, default_price_type_id) for r in data.get("rows", [])]}
 
@@ -370,7 +392,7 @@ async def search_products(q: str = Query("", alias="q"), token: str = Depends(ge
                 "GET",
                 "/entity/assortment",
                 token=token,
-                params={"filter": f"{field}~{q}", "limit": 50, "expand": "images"},
+                params={"filter": f"{field}~{q}", "limit": 50, "expand": "images", **stock_params},
             )
             for field in ("name", "code", "article")
         ]
@@ -385,7 +407,11 @@ async def search_products(q: str = Query("", alias="q"), token: str = Depends(ge
 
 
 @app.get("/api/products/scan")
-async def scan_product(code: str = Query(..., min_length=1), token: str = Depends(get_current_token)):
+async def scan_product(
+    code: str = Query(..., min_length=1),
+    store_id: str | None = Query(None),
+    token: str = Depends(get_current_token),
+):
     """Kamera bilan o'qilgan barkod bo'yicha ANIQ moslikni qidiradi.
 
     Real API'da tekshirilgan: "filter=barcode=<qiymat>" barkodlar massivi
@@ -395,7 +421,7 @@ async def scan_product(code: str = Query(..., min_length=1), token: str = Depend
         "GET",
         "/entity/assortment",
         token=token,
-        params={"filter": f"barcode={code}", "limit": 1, "expand": "images"},
+        params={"filter": f"barcode={code}", "limit": 1, "expand": "images", **_stock_params(store_id)},
     )
     rows = data.get("rows", [])
     if not rows:

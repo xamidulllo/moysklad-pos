@@ -9,8 +9,12 @@ const API = {
   login: "/api/login",
   logout: "/api/logout",
   me: "/api/me",
-  products: (q) => `/api/products?q=${encodeURIComponent(q)}`,
-  productScan: (code) => `/api/products/scan?code=${encodeURIComponent(code)}`,
+  products: (q, storeId) =>
+    `/api/products?q=${encodeURIComponent(q)}${storeId ? `&store_id=${encodeURIComponent(storeId)}` : ""}`,
+  productScan: (code, storeId) =>
+    `/api/products/scan?code=${encodeURIComponent(code)}${
+      storeId ? `&store_id=${encodeURIComponent(storeId)}` : ""
+    }`,
   counterparties: (q) => `/api/counterparties?q=${encodeURIComponent(q)}`,
   counterpartiesCreate: "/api/counterparties",
   accounts: "/api/accounts",
@@ -156,7 +160,7 @@ async function runProductSearch(query) {
   }
   try {
     showLoading(true);
-    const data = await apiGet(API.products(query.trim()));
+    const data = await apiGet(API.products(query.trim(), state.selectedStore ? state.selectedStore.id : null));
     renderProducts(data.items || []);
   } catch (err) {
     showToast("Mahsulotlarni yuklashda xatolik: " + extractErrorMessage(err), true);
@@ -188,6 +192,7 @@ function renderProducts(items) {
           <div class="product-name">${escapeHtml(p.name)}</div>
           <div class="product-meta">${escapeHtml(p.code || p.article || "")}</div>
           <div class="product-price">${formatMoney(p.price)}</div>
+          ${renderStockBadge(p.stock)}
         </div>
         <button class="add-btn" data-idx="${idx}" type="button">+</button>
       </div>`
@@ -212,6 +217,18 @@ function renderProducts(items) {
       { once: true }
     );
   });
+}
+
+// Tanlangan OMBOR bo'yicha aniq qoldiq — backend faqat "store_id" berilganda
+// shu maydonni to'ldiradi (aks holda "stock" undefined/null bo'ladi va
+// hech qanday belgi ko'rsatilmaydi, chunki qaysi ombor ekani noma'lum).
+function renderStockBadge(stock) {
+  if (stock === null || stock === undefined) return "";
+  const rounded = Math.round(stock * 100) / 100;
+  if (rounded <= 0) {
+    return `<div class="stock-badge stock-out">Omborda yo'q</div>`;
+  }
+  return `<div class="stock-badge stock-in">Omborda: ${rounded.toLocaleString("ru-RU")} dona</div>`;
 }
 
 function escapeHtml(str) {
@@ -439,9 +456,15 @@ function renderCart() {
   document.getElementById("checkoutTotal").textContent = formatCartMoney(total);
 }
 
+function renderCheckoutStoreInfo() {
+  const el = document.getElementById("checkoutStoreInfo");
+  if (el) el.textContent = state.selectedStore ? state.selectedStore.name : "Tanlanmagan";
+}
+
 document.getElementById("toCheckoutBtn").addEventListener("click", () => {
   switchView("checkout");
   loadCheckoutData();
+  renderCheckoutStoreInfo();
 });
 
 // ---------------- To'lov ekrani: tashkilot / ombor ----------------
@@ -465,6 +488,11 @@ async function loadCheckoutData() {
     });
     fillSelect("storeSelect", "storeGroup", state.stores, (s) => {
       state.selectedStore = s;
+      renderCheckoutStoreInfo();
+      // Ombor almashtirilganda joriy qidiruv natijasidagi qoldiqlar ("Omborda: N
+      // dona") ham YANGI omborga mos ravishda yangilanishi kerak — aks holda
+      // eski omborning qoldig'i ko'rsatilib qolib, kassirni chalg'itadi.
+      if (searchInput.value.trim()) runProductSearch(searchInput.value);
     });
   } catch (err) {
     showToast("Tashkilot/ombor yuklashda xatolik: " + extractErrorMessage(err), true);
@@ -785,12 +813,17 @@ scanFileInput.addEventListener("change", async () => {
       scanner.clear();
     }
 
-    const data = await apiGet(API.productScan(decodedText));
+    const data = await apiGet(
+      API.productScan(decodedText, state.selectedStore ? state.selectedStore.id : null)
+    );
     if (!data.item) {
       showToast(`Barkod topilmadi: ${decodedText}`, true);
       return;
     }
     addToCart(data.item);
+    if (data.item.stock !== null && data.item.stock !== undefined && data.item.stock <= 0) {
+      showToast(`Diqqat: "${data.item.name}" omborda yo'q`, true);
+    }
   } catch (err) {
     showToast("Suratda barkod topilmadi, qaytadan urinib ko'ring", true);
   } finally {
@@ -826,6 +859,11 @@ async function showApp(employeeName) {
   // kirishdan so'ng darhol yuklab, valyuta tanlovini tayyorlab qo'yamiz.
   await loadCurrencies();
   renderCartCurrencySelector();
+  // Ombor (va tashkilot/hisoblar) endi mahsulot qidiruv ekranida ham kerak —
+  // qoldiq ("Omborda: N dona") aynan TANLANGAN ombor bo'yicha ko'rsatiladi,
+  // shu sabab bu ilgari faqat to'lov ekranida yuklanadigan ma'lumot endi
+  // kirishdan so'ng darhol tayyorlanadi.
+  await loadCheckoutData();
 }
 
 async function bootstrapSession() {

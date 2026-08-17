@@ -93,11 +93,18 @@ nechta faol qurilma uchun mos emas.
 
 ## Ishlash tartibi (workflow)
 
-1. **Mahsulotlar** ekranida nom yoki SKU bo'yicha qidiriladi (`entity/assortment`),
-   "+" tugmasi bilan savatga qo'shiladi.
+1. **Mahsulotlar** ekranida avval **ombor** tanlanadi (kirishdan so'ng darhol
+   yuklanadi, bitta bo'lsa avtomatik tanlanadi), so'ng nom yoki SKU bo'yicha
+   qidiriladi (`entity/assortment`). Har bir tovar qatorida shu TANLANGAN
+   ombor bo'yicha aniq qoldiq ko'rsatiladi ("Omborda: N dona" / "Omborda
+   yo'q") — `entity/assortment`ga `stockStore=<ombor href>` berilganda
+   MoySklad har bir tovarni aynan shu ombordagi qoldig'i bilan qaytaradi
+   (real API'da tekshirilgan). Ombor almashtirilsa, qidiruv natijasi ham
+   avtomatik qayta yuklanadi. "+" tugmasi bilan savatga qo'shiladi.
 2. **Savat** ekranida miqdor `+`/`−` orqali o'zgartiriladi, umumiy summa avtomatik hisoblanadi.
 3. **To'lov** ekranida:
-   - Tashkilot va ombor (agar bittadan ko'p bo'lsa, tanlash mumkin; bitta bo'lsa avtomatik tanlanadi).
+   - Tashkilot tanlanadi (ombor allaqachon tanlangan — bu yerda faqat
+     ma'lumot sifatida ko'rsatiladi).
    - Mijoz nomi bo'yicha qidiriladi (`entity/counterparty`).
    - To'lov hisobi ro'yxati **dinamik** ravishda `entity/organization/{id}/accounts`'dan
      yuklanadi — kod ichida hech qanday hisob ID si yozilmagan (pastdagi eslatmaga qarang).
@@ -154,6 +161,16 @@ nechta muhim xususiyat aniqlandi:
    ishlaydi — bu haqiqiy hisobda ikkala holat uchun ham tekshirilgan.
 4. **Login/parol → token almashtirish real ishlaydi**, lekin bir login uchun bir
    vaqtda faqat bitta token faol bo'ladi (yuqoridagi "Kirish tizimi" bo'limiga qarang).
+5. **Manfiy/nol qoldiqqa otgruzka taqiqi hisob sozlamasiga bog'liq**
+   (`checkShippingStock`, MoySklad'da "Настройки" → "Общие"). Yoqilgan bo'lsa,
+   `entity/demand` yaratishda MoySklad xato 3007 bilan rad etadi — xuddi
+   sotuvchi MoySklad'ning o'z sahifasida ko'radigan xatoning aynan o'zi (real
+   hisobda ushbu sozlamani vaqtincha yoqib, sinovdan o'tkazilgan). Backend
+   buni alohida "tushunarli" xabarga aylantirmaydi — MoySklad'ning o'z xato
+   matnini frontend'ga uzatadi va (agar otgruzka bosqichida yuz bersa) allaqachon
+   yaratilgan buyurtmani avtomatik o'chiradi. Shu sabab **Mahsulotlar** ekranida
+   qoldiq oldindan ko'rsatiladi (yuqoriga qarang) — kassir bu xatoga umuman
+   duch kelmasdan oldin tovar yo'qligini bilib oladi.
 
 ## Xatoliklarni qayta ishlash
 
