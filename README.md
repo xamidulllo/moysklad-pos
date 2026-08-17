@@ -123,6 +123,12 @@ nechta faol qurilma uchun mos emas.
    "osilib qolgan" to'lanmagan buyurtma/otgruzka qolmaydi.
    - Chek printeri yoki fiskal qurilma bilan **hech qanday integratsiya yo'q** —
      talabga ko'ra faqat MoySklad hujjatlari yaratiladi.
+5. **Tarix** ekranida shu ilova orqali kiritilgan barcha buyurtmalar ko'rinadi
+   (sana, mijoz, summa, to'langan/to'lanmagan holati, izoh). Har bir buyurtma
+   yaratilganda unga avtomatik ravishda maxsus **"POS Mini App"** sotuv kanali
+   (`entity/saleschannel`) biriktiriladi — shu orqali MoySklad'dagi boshqa
+   botlar yoki qo'lda kiritilgan buyurtmalardan aniq ajratiladi
+   (`GET /api/orders/history`, `filter=salesChannel=...` bo'yicha).
 
 ### MUHIM: Haqiqiy MoySklad API'da tekshirilgan cheklovlar
 

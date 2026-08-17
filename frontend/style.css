@@ -424,6 +424,82 @@ main {
   margin-bottom: 14px;
 }
 
+/* ---------- History ---------- */
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.history-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+}
+
+.history-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.history-name {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.history-status {
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.history-status.paid {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--accent);
+}
+
+.history-status.unpaid {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+}
+
+.history-agent {
+  color: var(--text-dim);
+  font-size: 0.85rem;
+  margin-bottom: 8px;
+}
+
+.history-card-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.history-moment {
+  color: var(--text-dim);
+  font-size: 0.8rem;
+}
+
+.history-sum {
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.history-comment {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 0.82rem;
+}
+
 .primary-btn {
   width: 100%;
   padding: 14px;

@@ -13,6 +13,7 @@ Marshrutlar:
   GET  /api/currencies      — tashkilotda sozlangan valyutalar ro'yxati (entity/currency)
   GET  /api/projects        — loyihalar ro'yxati (entity/project)
   POST /api/checkout        — customerorder -> demand -> to'lov (cashin/paymentin) zanjirini yaratadi
+  GET  /api/orders/history  — shu ilova orqali kiritilgan buyurtmalar tarixi (saleschannel bo'yicha)
 
 Har bir /api/* (login'dan tashqari) marshrut joriy kassir sessiyasini talab qiladi —
 MoySklad'ga so'rov shu kassirning shaxsiy tokeni bilan yuboriladi (auth.py'ga qarang).
@@ -142,6 +143,35 @@ async def _get_default_price_type_id(token: str) -> "str | None":
 
     result = await _cached("default_price_type", token, loader)
     return result["id"]
+
+
+_POS_SALES_CHANNEL_NAME = "POS Mini App"
+
+
+async def _get_pos_sales_channel_meta(token: str) -> dict:
+    """Shu ilova orqali yaratilgan buyurtmalarni MoySklad'dagi boshqa botlar/qo'lda
+    kiritilgan buyurtmalardan ajratib turish uchun barcha buyurtmalarga bitta
+    maxsus "Канал продаж" (sales channel) biriktiriladi. Birinchi chaqiruvda
+    shu nomdagi kanal qidiriladi, topilmasa avtomatik yaratiladi (real API'da
+    tekshirilgan — "type": "ECOMMERCE" bilan)."""
+
+    async def loader():
+        data = await ms_request("GET", "/entity/saleschannel", token=token, params={"limit": 100})
+        existing = next(
+            (r for r in data.get("rows", []) if r.get("name") == _POS_SALES_CHANNEL_NAME), None
+        )
+        if existing:
+            return {"meta": existing["meta"]}
+        created = await ms_request(
+            "POST",
+            "/entity/saleschannel",
+            token=token,
+            json={"name": _POS_SALES_CHANNEL_NAME, "type": "ECOMMERCE"},
+        )
+        return {"meta": created["meta"]}
+
+    result = await _cached("pos_sales_channel", token, loader)
+    return result["meta"]
 
 
 def _pick_sale_price(sale_prices: list, default_price_type_id: "str | None") -> "dict | None":
@@ -566,6 +596,10 @@ async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_to
         "store": {"meta": payload.store_meta},
         "positions": positions,
         "applicable": True,
+        # Shu ilova orqali yaratilgan buyurtmalarni boshqa botlar/qo'lda
+        # kiritilganlardan ajratish uchun — "Tarix" bo'limi shu kanal bo'yicha
+        # filtrlaydi (real API'da tekshirilgan).
+        "salesChannel": {"meta": await _get_pos_sales_channel_meta(token)},
     }
     if document_rate:
         order_body["rate"] = document_rate
@@ -657,6 +691,57 @@ async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_to
         "demand": {"id": demand["id"], "name": demand.get("name")},
         "payment": {"id": payment["id"], "name": payment.get("name")},
     }
+
+
+# ---------------------------------------------------------------------------
+# Buyurtmalar tarixi — faqat shu ilova orqali kiritilganlar
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/orders/history")
+async def get_orders_history(token: str = Depends(get_current_token)):
+    """Shu mini ilova orqali yaratilgan buyurtmalar tarixini qaytaradi.
+    MoySklad'dagi boshqa botlar yoki qo'lda kiritilgan buyurtmalar bu ro'yxatga
+    tushmaydi — checkout paytida har bir buyurtmaga biriktiriladigan maxsus
+    "POS Mini App" sotuv kanali (salesChannel) bo'yicha filtrlanadi."""
+
+    channel_meta = await _get_pos_sales_channel_meta(token)
+    channel_href = channel_meta["href"]
+
+    data = await ms_request(
+        "GET",
+        "/entity/customerorder",
+        token=token,
+        params={
+            "filter": f"salesChannel={channel_href}",
+            "expand": "agent",
+            "order": "moment,desc",
+            "limit": 50,
+        },
+    )
+
+    items = []
+    for row in data.get("rows", []):
+        total_sum = (row.get("sum") or 0) / 100
+        payed_sum = (row.get("payedSum") or 0) / 100
+        agent = row.get("agent") or {}
+        rate = row.get("rate") or {}
+        currency = rate.get("currency") or {}
+        currency_href = (currency.get("meta") or {}).get("href")
+        items.append(
+            {
+                "id": row["id"],
+                "name": row.get("name"),
+                "moment": row.get("moment"),
+                "agent_name": agent.get("name"),
+                "sum": total_sum,
+                "is_paid": total_sum > 0 and payed_sum >= total_sum,
+                "currency_id": _id_from_href(currency_href) if currency_href else None,
+                "comment": row.get("description"),
+            }
+        )
+
+    return {"items": items}
 
 
 # Frontend'ni backend bilan bitta origin'dan xizmat ko'rsatish — PWA va CORS uchun qulay.

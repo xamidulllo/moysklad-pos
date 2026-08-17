@@ -18,6 +18,7 @@ const API = {
   currencies: "/api/currencies",
   projects: "/api/projects",
   checkout: "/api/checkout",
+  orderHistory: "/api/orders/history",
 };
 
 const state = {
@@ -132,7 +133,10 @@ function switchView(name) {
 }
 
 document.querySelectorAll(".nav-btn").forEach((btn) => {
-  btn.addEventListener("click", () => switchView(btn.dataset.view));
+  btn.addEventListener("click", () => {
+    switchView(btn.dataset.view);
+    if (btn.dataset.view === "history") loadHistory();
+  });
 });
 
 document.getElementById("cartBtn").addEventListener("click", () => switchView("cart"));
@@ -871,6 +875,67 @@ document.getElementById("logoutBtn").addEventListener("click", async () => {
   renderCart();
   showLoginScreen();
 });
+
+// ---------------- Buyurtmalar tarixi ----------------
+//
+// Faqat shu ilova orqali kiritilgan buyurtmalar (backend ularni maxsus
+// "POS Mini App" sotuv kanali bo'yicha filtrlab beradi — boshqa botlar yoki
+// qo'lda kiritilgan buyurtmalar bu ro'yxatga tushmaydi).
+
+const historyList = document.getElementById("historyList");
+const historyHint = document.getElementById("historyHint");
+
+function formatHistoryMoment(moment) {
+  if (!moment) return "";
+  // MoySklad "YYYY-MM-DD HH:MM:SS" formatida qaytaradi
+  const parsed = new Date(moment.replace(" ", "T"));
+  if (Number.isNaN(parsed.getTime())) return moment;
+  return parsed.toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+async function loadHistory() {
+  historyHint.textContent = "Yuklanmoqda...";
+  historyHint.classList.remove("hidden");
+  historyList.innerHTML = "";
+  try {
+    const data = await apiGet(API.orderHistory);
+    const items = data.items || [];
+    if (!items.length) {
+      historyHint.textContent = "Hozircha buyurtmalar yo'q";
+      return;
+    }
+    historyHint.classList.add("hidden");
+    items.forEach((item) => {
+      const cur = currencyById(item.currency_id) || defaultCurrency();
+      const card = document.createElement("div");
+      card.className = "history-card";
+      card.innerHTML = `
+        <div class="history-card-top">
+          <span class="history-name">${escapeHtml(item.name || "")}</span>
+          <span class="history-status ${item.is_paid ? "paid" : "unpaid"}">${
+        item.is_paid ? "To'langan" : "To'lanmagan"
+      }</span>
+        </div>
+        <div class="history-agent">${escapeHtml(item.agent_name || "")}</div>
+        <div class="history-card-bottom">
+          <span class="history-moment">${escapeHtml(formatHistoryMoment(item.moment))}</span>
+          <span class="history-sum">${escapeHtml(formatWithLabel(item.sum, cur ? cur.name : ""))}</span>
+        </div>
+        ${item.comment ? `<div class="history-comment">${escapeHtml(item.comment)}</div>` : ""}
+      `;
+      historyList.appendChild(card);
+    });
+  } catch (err) {
+    historyHint.textContent = "Yuklashda xatolik: " + extractErrorMessage(err);
+    historyHint.classList.remove("hidden");
+  }
+}
 
 // ---------------- Eski Service Worker'ni tozalash ----------------
 //
