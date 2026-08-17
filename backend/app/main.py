@@ -265,6 +265,26 @@ async def me(session: dict = Depends(get_current_session)):
 # ---------------------------------------------------------------------------
 
 
+def _extract_image_url(row: dict) -> "str | None":
+    """Tovar rasmining kichik (tiny) nusxasi URL'ini qaytaradi.
+
+    MUHIM (real hisobda tekshirilgan, o'zim rasm yuklab ko'rdim): rasmning
+    "tiny"/"miniature" havolalari MoySklad'ning asosiy API domenida EMAS,
+    balki alohida "tinyimage-prod.moysklad.ru" kabi domenda joylashgan va
+    HECH QANDAY autentifikatsiya talab qilmaydi (ochiq, imzolangan URL) —
+    shu sabab backend orqali "proxy" qilishning hojati yo'q, frontend to'g'ridan-
+    to'g'ri shu URL'dan foydalanadi.
+    """
+    images = row.get("images")
+    if not isinstance(images, dict):
+        return None
+    image_rows = images.get("rows")
+    if not image_rows:
+        return None
+    tiny = image_rows[0].get("tiny") or {}
+    return tiny.get("href")
+
+
 def _assortment_row_to_item(row: dict, default_price_type_id: "str | None") -> dict:
     sale_prices = row.get("salePrices") or []
     # ESLATMA (haqiqiy hisobda tekshirilgan): bir tovarda bir nechta narx turi
@@ -284,6 +304,7 @@ def _assortment_row_to_item(row: dict, default_price_type_id: "str | None") -> d
         "article": row.get("article"),
         "price": price,
         "price_currency_id": price_currency_id,
+        "image_url": _extract_image_url(row),
         "type": (row.get("meta") or {}).get("type"),
     }
 
@@ -303,12 +324,19 @@ async def search_products(q: str = Query("", alias="q"), token: str = Depends(ge
     default_price_type_id = await _get_default_price_type_id(token)
 
     if not q:
-        data = await ms_request("GET", "/entity/assortment", token=token, params={"limit": 50})
+        data = await ms_request(
+            "GET", "/entity/assortment", token=token, params={"limit": 50, "expand": "images"}
+        )
         return {"items": [_assortment_row_to_item(r, default_price_type_id) for r in data.get("rows", [])]}
 
     results = await asyncio.gather(
         *[
-            ms_request("GET", "/entity/assortment", token=token, params={"filter": f"{field}~{q}", "limit": 50})
+            ms_request(
+                "GET",
+                "/entity/assortment",
+                token=token,
+                params={"filter": f"{field}~{q}", "limit": 50, "expand": "images"},
+            )
             for field in ("name", "code", "article")
         ]
     )
@@ -329,7 +357,10 @@ async def scan_product(code: str = Query(..., min_length=1), token: str = Depend
     ("barcodes": [{"ean13": "..."}]) ichidan aniq moslikni topadi.
     """
     data = await ms_request(
-        "GET", "/entity/assortment", token=token, params={"filter": f"barcode={code}", "limit": 1}
+        "GET",
+        "/entity/assortment",
+        token=token,
+        params={"filter": f"barcode={code}", "limit": 1, "expand": "images"},
     )
     rows = data.get("rows", [])
     if not rows:

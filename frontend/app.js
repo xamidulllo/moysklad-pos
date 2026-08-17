@@ -173,6 +173,13 @@ function renderProducts(items) {
     .map(
       (p, idx) => `
       <div class="product-card">
+        <div class="product-thumb">
+          ${
+            p.image_url
+              ? `<img class="product-img" data-idx="${idx}" src="${escapeHtml(p.image_url)}" alt="" loading="lazy" />`
+              : `<span class="product-thumb-placeholder">📦</span>`
+          }
+        </div>
         <div class="product-info">
           <div class="product-name">${escapeHtml(p.name)}</div>
           <div class="product-meta">${escapeHtml(p.code || p.article || "")}</div>
@@ -185,6 +192,21 @@ function renderProducts(items) {
 
   productList.querySelectorAll(".add-btn").forEach((btn) => {
     btn.addEventListener("click", () => addToCart(items[Number(btn.dataset.idx)]));
+  });
+
+  // Rasm yuklanmasa (masalan o'chirilgan/buzilgan havola), standart belgiga almashtiramiz —
+  // ilova hech qachon "buzilgan rasm" belgisini ko'rsatmaydi.
+  productList.querySelectorAll(".product-img").forEach((img) => {
+    img.addEventListener(
+      "error",
+      () => {
+        const placeholder = document.createElement("span");
+        placeholder.className = "product-thumb-placeholder";
+        placeholder.textContent = "📦";
+        img.replaceWith(placeholder);
+      },
+      { once: true }
+    );
   });
 }
 
