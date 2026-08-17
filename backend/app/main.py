@@ -266,14 +266,17 @@ async def me(session: dict = Depends(get_current_session)):
 
 
 def _extract_image_url(row: dict) -> "str | None":
-    """Tovar rasmining kichik (tiny) nusxasi URL'ini qaytaradi.
+    """Tovar rasmining kichraytirilgan nusxasi URL'ini qaytaradi.
 
-    MUHIM (real hisobda tekshirilgan, o'zim rasm yuklab ko'rdim): rasmning
-    "tiny"/"miniature" havolalari MoySklad'ning asosiy API domenida EMAS,
-    balki alohida "tinyimage-prod.moysklad.ru" kabi domenda joylashgan va
-    HECH QANDAY autentifikatsiya talab qilmaydi (ochiq, imzolangan URL) —
-    shu sabab backend orqali "proxy" qilishning hojati yo'q, frontend to'g'ridan-
-    to'g'ri shu URL'dan foydalanadi.
+    MUHIM (real hisobda tekshirilgan, o'zim rasm yuklab ko'rdim): MoySklad
+    rasmning bir nechta o'lchamini beradi — "tiny" (juda kichik, sifatsiz —
+    ro'yxatda deyarli tanib bo'lmaydi) va undan katta/sifatliroq "miniature".
+    Ikkalasi ham MoySklad'ning asosiy API domenida EMAS, balki alohida
+    "tinyimage-prod.moysklad.ru" / "miniature-prod.moysklad.ru" domenlarida
+    joylashgan va HECH QANDAY autentifikatsiya talab qilmaydi — shu sabab
+    backend orqali "proxy" qilishning hojati yo'q. "miniature.href" (asosiy
+    API domenida) autentifikatsiya talab qiladi — shuning uchun aynan
+    "miniature.downloadHref" ishlatiladi, "miniature.href" emas.
     """
     images = row.get("images")
     if not isinstance(images, dict):
@@ -281,8 +284,10 @@ def _extract_image_url(row: dict) -> "str | None":
     image_rows = images.get("rows")
     if not image_rows:
         return None
-    tiny = image_rows[0].get("tiny") or {}
-    return tiny.get("href")
+    first = image_rows[0]
+    miniature = first.get("miniature") or {}
+    tiny = first.get("tiny") or {}
+    return miniature.get("downloadHref") or tiny.get("href")
 
 
 def _assortment_row_to_item(row: dict, default_price_type_id: "str | None") -> dict:
