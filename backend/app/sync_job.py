@@ -2,6 +2,15 @@
 vazifasi. Google Apps Script trigger'i (00:00/06:00/12:00/18:00, Asia/Tashkent)
 POST /api/sync/run orqali shu run_sync()'ni chaqiradi (main.py'ga qarang).
 
+Har bir buyurtma AYNAN o'sha buyurtmani navbatga qo'ygan kassirning o'z
+login-paroli bilan MoySklad'ga yuboriladi (umumiy/admin hisob emas) — parol
+checkout paytida shifrlab (crypto.py) Sheets qatoriga yozib qo'yilgan, shu
+yerda hal qilinib, ANIQ shu kassir uchun yangi token olinadi. Buning natijasi
+o'laroq MoySklad'da har bir hujjat aynan haqiqiy sotuvchi nomidan yaratiladi
+— lekin agar shu kassir sync ishlagan paytda ilovada ham faol bo'lsa, uning
+joriy sessiyasi kutilmaganda uzilishi mumkin (MoySklad bir login uchun
+faqat bitta faol token saqlaydi) — bu ongli ravishda qabul qilingan xavf.
+
 XAVFSIZLIK — nega bu oddiy "hamma pending qatorni qayta ishla" emas:
 execute_checkout_chain()'ning idempotentlik kaliti yo'q. Agar sync jarayoni
 MoySklad hujjatlarini MUVAFFAQIYATLI yaratgandan KEYIN, lekin Sheets'ga
@@ -18,9 +27,8 @@ import logging
 
 from fastapi import HTTPException
 
-from . import sheets_client, stock_cache
+from . import crypto, sheets_client, stock_cache
 from .checkout_chain import RollbackFailedError, execute_checkout_chain
-from .config import MS_SYNC_LOGIN, MS_SYNC_PASSWORD
 from .moysklad_client import exchange_credentials_for_token
 from .schemas import CheckoutRequest
 
@@ -39,11 +47,57 @@ def _format_http_error(exc: HTTPException) -> str:
     return str(detail)
 
 
-async def _sync_one_row(row: dict, token: str) -> str:
+async def _get_token_for_row(row: dict) -> "tuple[str | None, str | None]":
+    """Qatorni navbatga qo'ygan ANIQ kassir uchun yangi MoySklad token oladi.
+    Muvaffaqiyatli bo'lsa (token, None), aks holda (None, xato_matni) qaytaradi.
+    Xatoni chaqiruvchi hal qiladi — login/parol haqiqatan noto'g'ri bo'lsa
+    "failed" (o'zi tuzatilmaydi), tarmoq/vaqtinchalik xato bo'lsa qator
+    o'zgartirilmasdan qoldiriladi (keyingi tsiklda avtomatik qayta uriniladi).
+    """
+    encrypted = row.get("cashier_password_enc")
+    login = row.get("cashier_login")
+    if not encrypted or not login:
+        return None, "Kassir login/paroli qatorda saqlanmagan (eski yozuv yoki server sozlamasi to'liq emas)"
+    try:
+        raw_password = crypto.decrypt_password(encrypted)
+    except (crypto.CredentialEncryptionNotConfigured, ValueError) as exc:
+        return None, f"Parolni ochib bo'lmadi: {exc}"
+
+    try:
+        token = await exchange_credentials_for_token(login, raw_password)
+    except HTTPException as exc:
+        if exc.status_code in (401, 403):
+            return None, f"Kassir ({login}) login/paroli bilan kirib bo'lmadi (o'zgargan bo'lishi mumkin): {_format_http_error(exc)}"
+        raise  # 429/5xx va h.k. — vaqtinchalik, chaqiruvchi buni alohida ushlaydi
+    return token, None
+
+
+async def _sync_one_row(row: dict) -> str:
     """Bitta qatorni sinxronlaydi, natija holatini ("synced"/"failed"/
     "needs_manual_check"/"skipped") qaytaradi."""
     order_id = row["order_id"]
 
+    # 1) Aynan shu kassir uchun yangi token — hech qanday Sheet holatini
+    # o'zgartirishdan OLDIN, shuning uchun bu bosqichdagi xato hech narsani
+    # "yarim holatda" qoldirmaydi.
+    try:
+        token, error = await _get_token_for_row(row)
+    except HTTPException as exc:
+        # Vaqtinchalik MoySklad xatosi (masalan 429/5xx) — qatorni
+        # o'zgartirmaymiz, keyingi tsikl avtomatik qayta uradi.
+        logger.warning("Qator %s: token olishda vaqtinchalik xato: %s", order_id, _format_http_error(exc))
+        return "skipped"
+    if error:
+        await sheets_client.update_row(
+            order_id,
+            status=sheets_client.STATUS_FAILED,
+            last_error=error,
+            last_attempt_at=sheets_client.now_iso(),
+        )
+        return "failed"
+
+    # 2) Qatorni "band qilish" — faqat hali pending/failed bo'lsa (oldingi
+    # halokatdan keyin qayta tiklangan "syncing" qator buni allaqachon o'tgan).
     if row["status"] in (sheets_client.STATUS_PENDING, sheets_client.STATUS_FAILED):
         claimed = await sheets_client.compare_and_set_status(
             order_id,
@@ -118,29 +172,11 @@ async def _sync_one_row(row: dict, token: str) -> str:
 
 
 async def _run_sync_inner() -> dict:
-    if not MS_SYNC_LOGIN or not MS_SYNC_PASSWORD:
-        return {
-            "error": "MS_SYNC_LOGIN/MS_SYNC_PASSWORD sozlanmagan",
-            "attempted": 0, "synced": 0, "failed": 0, "needs_manual_check": 0, "results": [],
-        }
-
-    # Avval token — hech qanday qatorga tegishdan OLDIN. Shu yerda xato
-    # chiqsa, hech narsa o'zgartirilmagan, keyingi trigger butun navbatni
-    # xavfsiz qayta urinishi mumkin.
-    try:
-        token = await exchange_credentials_for_token(MS_SYNC_LOGIN, MS_SYNC_PASSWORD)
-    except HTTPException as exc:
-        logger.error("Sync uchun MoySklad token olinmadi: %s", exc.detail)
-        return {
-            "error": f"Token olinmadi: {_format_http_error(exc)}",
-            "attempted": 0, "synced": 0, "failed": 0, "needs_manual_check": 0, "results": [],
-        }
-
     rows = await sheets_client.get_syncable_rows()
     counts = {"synced": 0, "failed": 0, "needs_manual_check": 0, "skipped": 0}
     results = []
     for row in rows:
-        outcome = await _sync_one_row(row, token)
+        outcome = await _sync_one_row(row)
         counts[outcome] = counts.get(outcome, 0) + 1
         results.append({"order_id": row["order_id"], "outcome": outcome})
 

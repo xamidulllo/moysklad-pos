@@ -38,7 +38,7 @@ from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import sheets_client, stock_cache, sync_job
+from . import crypto, sheets_client, stock_cache, sync_job
 from .auth import create_session, delete_session, get_current_session, get_current_token, require_sync_secret
 from .bot import start_bot, stop_bot
 from .cache import _cached
@@ -163,7 +163,17 @@ async def login(payload: LoginRequest, response: Response):
     employee = await ms_request("GET", "/context/employee", token=token)
     employee_name = employee.get("name") or employee.get("fullName") or payload.login
 
-    session_id = create_session(token, employee_name)
+    # "queue" rejimida navbatga qo'yilgan buyurtmani soatlab keyin AYNAN shu
+    # kassir nomidan sinxronlash uchun parol shifrlab saqlanadi (crypto.py).
+    # CREDENTIAL_ENCRYPTION_KEY sozlanmagan bo'lsa (bu funksiya ishlatilmasa),
+    # jim o'tkazib yuboriladi — login o'zi baribir davom etadi.
+    password_enc = None
+    try:
+        password_enc = crypto.encrypt_password(payload.password)
+    except crypto.CredentialEncryptionNotConfigured:
+        pass
+
+    session_id = create_session(token, employee_name, payload.login, password_enc)
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session_id,
@@ -519,12 +529,25 @@ async def checkout(payload: CheckoutRequest, session: dict = Depends(get_current
         result = await execute_checkout_chain(payload, session["token"])
         return {"mode": "direct", **result}
 
+    if not session.get("password_enc"):
+        # "queue" rejimida sync HAR BIR buyurtmani AYNAN shu kassir nomidan
+        # yuboradi (umumiy hisob emas) — buning uchun kirishda parol shifrlab
+        # saqlanadi (auth.create_session). Agar shu yerda yo'q bo'lsa, demak
+        # server CREDENTIAL_ENCRYPTION_KEY'siz ishga tushirilgan — checkout
+        # noaniq holatda davom etgandan ko'ra, aniq xato berish yaxshiroq.
+        raise HTTPException(
+            status_code=500,
+            detail="Server sozlamasi to'liq emas (CREDENTIAL_ENCRYPTION_KEY) — administratorga murojaat qiling",
+        )
+
     order_id = str(uuid4())
     store_id = _id_from_href((payload.store_meta or {}).get("href", ""))
 
     await sheets_client.append_pending_order(
         order_id=order_id,
         cashier_name=session["employee_name"],
+        cashier_login=session["login"],
+        cashier_password_enc=session["password_enc"],
         store_id=store_id,
         store_name=payload.store_name,
         agent_name=payload.agent_name,

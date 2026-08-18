@@ -212,29 +212,53 @@ Kassirlar "Tarix" ekranida hali sinxronlanmagan buyurtmalarni "Kutilmoqda"
 statusi bilan ko'radi va ular sinxronlanmaguncha erkin tahrirlashi
 (miqdorini o'zgartirish) yoki butunlay bekor qilishi mumkin.
 
+**Har bir buyurtma AYNAN o'sha buyurtmani kiritgan kassirning o'z nomidan**
+MoySklad'ga yuboriladi (bitta umumiy/admin hisob emas) — shunday qilib
+MoySklad'da qaysi kassir nimani sotgani hozirgidek aniq ko'rinadi. Buning
+uchun kassirning paroli (`crypto.py`, Fernet bilan shifrlangan holda) checkout
+paytida Sheets qatoriga yozib qo'yiladi, sync esa uni hal qilib, aynan shu
+kassir uchun yangi token oladi. **Muhim oqibat**: agar shu kassir sync
+ishlagan payt (00:00/06:00/12:00/18:00) ilovada ham faol bo'lsa, MoySklad bir
+login uchun faqat bitta faol token saqlagani sabab uning joriy sessiyasi
+kutilmaganda uzilib, qayta kirishga to'g'ri kelishi mumkin — bu ongli
+ravishda qabul qilingan almashinuv (kassir izini saqlash uchun).
+
 ### Sozlash
 
 1. **Google Cloud Console**: yangi loyiha (yoki mavjudini tanlang), **Google
-   Sheets API**'ni yoqing, so'ng IAM & Admin → Service Accounts orqali
-   service-account yarating va uning uchun JSON kalit yuklab oling.
-2. Yangi Google Sheet yarating, uni **service-account'ning `client_email`
-   manzili bilan Editor huquqi bilan ulashing** (bu qadam tez-tez unutiladi
-   — bo'lmasa backend jadvalni "topolmaydi").
-3. JSON kalitni base64'ga o'giring va Render'da `GOOGLE_SERVICE_ACCOUNT_JSON_B64`
-   sifatida saqlang (PowerShell: `[Convert]::ToBase64String([IO.File]::ReadAllBytes("kalit.json"))`).
-4. Sheet URL'idagi ID'ni `GOOGLE_SHEETS_SPREADSHEET_ID`ga qo'ying.
-5. `SYNC_TRIGGER_SECRET` yarating (`python -c "import secrets; print(secrets.token_urlsafe(32))"`)
+   Sheets API**'ni yoqing.
+2. **Google Sheets'ga ulanish uchun kalit** — ikki usul bor, birinchisini
+   sinab ko'ring:
+   - **OAuth (tavsiya)**: ko'pgina yangi Google Cloud loyihalarida "Secure by
+     Default" siyosati service-account KALIT yaratishni butunlay bloklab
+     qo'yadi ("Service account key creation is disabled" xatosi). Bunday
+     holda: "APIs & Services" → "Credentials" → "Create Credentials" →
+     "OAuth client ID" → turi **"Desktop app"**. Chiqqan Client ID/Secret'ni
+     `GOOGLE_OAUTH_CLIENT_ID`/`GOOGLE_OAUTH_CLIENT_SECRET`ga qo'ying, so'ng
+     bir martalik brauzer orqali login qilib `refresh_token` oling (buni
+     avtomatlashtirish uchun `backend`dagi yordamchi skriptni yoki qo'lda
+     OAuth "authorization code" oqimini ishlatish mumkin) va
+     `GOOGLE_OAUTH_REFRESH_TOKEN`ga qo'ying. **Eslatma**: OAuth consent
+     screen "Testing" holatida bo'lsa, o'z emailingizni "Test users"ga
+     qo'shishingiz kerak, aks holda "access_denied" xatosi chiqadi.
+   - **Service-account** (agar policy ruxsat bersa): IAM & Admin → Service
+     Accounts orqali yarating, JSON kalit yuklab oling, uni base64'ga
+     o'giring (`[Convert]::ToBase64String([IO.File]::ReadAllBytes("kalit.json"))`)
+     va `GOOGLE_SERVICE_ACCOUNT_JSON_B64`ga qo'ying. Bu holda Sheet'ni
+     service-account'ning `client_email` manziliga Editor huquqi bilan
+     ulashish HAM kerak — OAuth usulida bu shart emas, chunki Sheet
+     to'g'ridan-to'g'ri sizning hisobingiz nomidan yaratiladi/ochiladi.
+3. Google Sheet'ni yarating (yoki OAuth orqali API bilan yaratiladi), ID'ni
+   URL'dan olib `GOOGLE_SHEETS_SPREADSHEET_ID`ga qo'ying.
+4. `SYNC_TRIGGER_SECRET` yarating (`python -c "import secrets; print(secrets.token_urlsafe(32))"`)
    va Render'ga qo'ying.
-6. `MS_SYNC_LOGIN`/`MS_SYNC_PASSWORD` — MoySklad'ga navbatdagi buyurtmalarni
-   yuborish uchun ishlatiladigan **mavjud** login/parol (yangi xodim
-   yaratish shart emas — MoySklad qo'shimcha xodim uchun pul so'raydi).
-   **Diqqat**: agar shu login boshqa joyda (masalan sizning brauzeringizda
-   yoki boshqa avtomatlashtirish) bir vaqtda ishlatilsa, MoySklad bir login
-   uchun faqat bitta faol token saqlagani sabab tokenlar to'qnashishi
-   mumkin — bu qabul qilingan xavf.
-7. `EXPECTED_MS_ORGANIZATION_ID` — MoySklad'dagi `entity/organization` UUID'i
+5. `CREDENTIAL_ENCRYPTION_KEY` — kassirlarning parolini (Sheets qatorida)
+   shifrlash uchun kalit: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
+   Bu bo'lmasa, "queue" rejimidagi checkout xato qaytaradi (chunki
+   sinxronlash uchun kimning nomidan yuborishni bilmaydi).
+6. `EXPECTED_MS_ORGANIZATION_ID` — MoySklad'dagi `entity/organization` UUID'i
    (MoySklad'ning o'zida yoki API orqali topish mumkin).
-8. Google Sheet ichida: **Extensions → Apps Script**, quyidagi kabi funksiya
+7. Google Sheet ichida: **Extensions → Apps Script**, quyidagi kabi funksiya
    qo'shing (BACKEND_URL/SYNC_SECRET qiymatlarini kodga yozmang — Project
    Settings → Script Properties'ga saqlang):
 
@@ -271,8 +295,15 @@ statusi bilan ko'radi va ular sinxronlanmaguncha erkin tahrirlashi
 
 ### Bilinadigan cheklovlar
 
-- Faqat bitta MoySklad tashkiloti uchun ishlaydi (bitta Sheet, bitta sync
-  login).
+- Faqat bitta MoySklad tashkiloti uchun ishlaydi (bitta Sheet).
+- Sync har bir buyurtmani o'sha kassirning o'z login-paroli bilan yuboradi —
+  agar sync ishlagan payt (00:00/06:00/12:00/18:00) o'sha kassir ilovada
+  faol bo'lsa, uning sessiyasi kutilmaganda uzilishi mumkin (yuqoridagi
+  "Nega kerak..." bo'limiga qarang).
+- Agar kassir MoySklad parolini o'zgartirsa, undan OLDIN navbatga qo'yilgan
+  (hali sinxronlanmagan) buyurtmalar eski parol bilan sinxronlanishga
+  urinadi va "Xato" (`failed`) holatiga tushadi — bunday holatda buyurtmani
+  o'chirib, kassir qaytadan kiritishi kerak bo'ladi.
 - Sinxronlash jarayoni navbatdagi buyurtmani yaratishda kutilmagan xatoga
   uchrasa (masalan MoySklad'dagi orqaga qaytarish — rollback — o'zi ham
   muvaffaqiyatsiz tugasa), qator "Tekshirish kerak" (`needs_manual_check`)

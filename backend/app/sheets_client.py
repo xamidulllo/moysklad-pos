@@ -19,7 +19,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import gspread
-from google.oauth2.service_account import Credentials
+from google.oauth2.credentials import Credentials as OAuthUserCredentials
+from google.oauth2.service_account import Credentials as ServiceAccountCredentials
 
 from . import config
 
@@ -27,6 +28,7 @@ _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 COLUMNS = [
     "order_id", "status", "created_at", "edited_at", "cashier_name",
+    "cashier_login", "cashier_password_enc",
     "store_id", "store_name", "agent_name", "items_summary", "total_sum",
     "currency_name", "is_debt", "payload_json", "chain_started_at",
     "last_attempt_at", "last_error", "synced_at",
@@ -87,10 +89,27 @@ _worksheet_lock = asyncio.Lock()
 
 
 def _build_client_sync() -> gspread.Client:
+    """Ikki ulanish usulini qo'llab-quvvatlaydi — avval OAuth (shaxsiy hisob,
+    ko'p Google Cloud loyihalarida "Organization Policy" tomonidan
+    service-account kalitlari butunlay bloklangani uchun tavsiya etiladi),
+    aks holda service-account JSON kaliti."""
+    if config.GOOGLE_OAUTH_REFRESH_TOKEN and config.GOOGLE_OAUTH_CLIENT_ID and config.GOOGLE_OAUTH_CLIENT_SECRET:
+        creds = OAuthUserCredentials(
+            token=None,
+            refresh_token=config.GOOGLE_OAUTH_REFRESH_TOKEN,
+            client_id=config.GOOGLE_OAUTH_CLIENT_ID,
+            client_secret=config.GOOGLE_OAUTH_CLIENT_SECRET,
+            token_uri="https://oauth2.googleapis.com/token",
+            scopes=_SCOPES,
+        )
+        return gspread.authorize(creds)
+
     if not config.GOOGLE_SERVICE_ACCOUNT_JSON_B64:
-        raise SheetsNotConfigured("GOOGLE_SERVICE_ACCOUNT_JSON_B64 sozlanmagan")
+        raise SheetsNotConfigured(
+            "Na OAuth (GOOGLE_OAUTH_*), na GOOGLE_SERVICE_ACCOUNT_JSON_B64 sozlanmagan"
+        )
     info = json.loads(base64.b64decode(config.GOOGLE_SERVICE_ACCOUNT_JSON_B64).decode("utf-8"))
-    creds = Credentials.from_service_account_info(info, scopes=_SCOPES)
+    creds = ServiceAccountCredentials.from_service_account_info(info, scopes=_SCOPES)
     return gspread.authorize(creds)
 
 
@@ -170,6 +189,8 @@ def _append_row_sync(ws: gspread.Worksheet, row_values: list) -> None:
 async def append_pending_order(
     order_id: str,
     cashier_name: str,
+    cashier_login: str,
+    cashier_password_enc: "str | None",
     store_id: "str | None",
     store_name: "str | None",
     agent_name: "str | None",
@@ -183,6 +204,8 @@ async def append_pending_order(
         "order_id": order_id,
         "status": STATUS_PENDING,
         "created_at": now_iso(),
+        "cashier_login": cashier_login,
+        "cashier_password_enc": cashier_password_enc or "",
         "edited_at": "",
         "cashier_name": cashier_name or "",
         "store_id": store_id or "",

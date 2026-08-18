@@ -34,20 +34,34 @@ CHECKOUT_MODE = os.getenv("CHECKOUT_MODE", "direct").strip().lower()
 # aralashib ketmasligi uchun.
 EXPECTED_MS_ORGANIZATION_ID = os.getenv("EXPECTED_MS_ORGANIZATION_ID", "").strip() or None
 
-# Sinxronlash vazifasi MoySklad'ga navbatdagi buyurtmalarni yuborish uchun
-# ishlatadigan login/parol — kassirning shaxsiy tokeniga tayanmaydi (u vaqtinchalik
-# va xotirada saqlanadi). Qo'shimcha xodim yaratish shart emas — mavjud
-# (masalan egasi/administrator) login ishlatilishi mumkin.
-MS_SYNC_LOGIN = os.getenv("MS_SYNC_LOGIN", "").strip() or None
-MS_SYNC_PASSWORD = os.getenv("MS_SYNC_PASSWORD", "").strip() or None
+# Sinxronlash HAR BIR buyurtmani AYNAN o'sha buyurtmani kiritgan kassirning
+# o'z nomidan MoySklad'ga yuboradi (kassir ismini emas, umumiy hisobni
+# ishlatish o'rniga) — shuning uchun kassirning paroli checkout paytida
+# shifrlab (crypto.py, Fernet) Sheets qatoriga yozib qo'yiladi, sync esa uni
+# hal qilib, ANIQ shu kassir nomidan yangi token oladi. Shu kalit — shifrlash
+# uchun, generatsiya: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+CREDENTIAL_ENCRYPTION_KEY = os.getenv("CREDENTIAL_ENCRYPTION_KEY", "").strip() or None
 
 # Google Apps Script trigger shu maxfiy qiymatni "X-Sync-Secret" header'ida
 # yuborishi kerak — bo'lmasa /api/sync/run so'rovni rad etadi.
 SYNC_TRIGGER_SECRET = os.getenv("SYNC_TRIGGER_SECRET", "").strip() or None
 
-# Google service-account JSON kaliti, base64'da (Render kabi veb-panellarda
-# ko'p qatorli JSON'ni to'g'ridan-to'g'ri joylashtirish "private_key"dagi "\n"
-# belgilarini buzib qo'yishi ma'lum muammo — base64 buni butunlay oldini oladi).
+# Google Sheets'ga ulanishning IKKI usuli qo'llab-quvvatlanadi — sheets_client.py
+# avval OAuth (shaxsiy hisob) ma'lumotlari to'liq bo'lsa o'shani ishlatadi,
+# aks holda service-account JSON kalitiga qaytadi.
+#
+# 1) OAuth (tavsiya — ko'p tashkilotlarda "Organization Policy" service-account
+#    kalit yaratishni butunlay bloklab qo'yadi, "Secure by Default" siyosati
+#    tufayli). Bir martalik login orqali olingan refresh_token — token muddati
+#    tugasa ham, backend uni avtomatik yangilab turadi.
+GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip() or None
+GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip() or None
+GOOGLE_OAUTH_REFRESH_TOKEN = os.getenv("GOOGLE_OAUTH_REFRESH_TOKEN", "").strip() or None
+
+# 2) Service-account JSON kaliti, base64'da (Render kabi veb-panellarda ko'p
+#    qatorli JSON'ni to'g'ridan-to'g'ri joylashtirish "private_key"dagi "\n"
+#    belgilarini buzib qo'yishi ma'lum muammo — base64 buni butunlay oldini oladi).
 GOOGLE_SERVICE_ACCOUNT_JSON_B64 = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "").strip() or None
+
 GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip() or None
 GOOGLE_SHEETS_WORKSHEET_NAME = os.getenv("GOOGLE_SHEETS_WORKSHEET_NAME", "Orders").strip()

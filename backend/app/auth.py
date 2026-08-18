@@ -22,11 +22,24 @@ from .config import SESSION_TTL_HOURS, SYNC_TRIGGER_SECRET
 _sessions: dict[str, dict] = {}
 
 
-def create_session(token: str, employee_name: str) -> str:
+def create_session(
+    token: str,
+    employee_name: str,
+    login: str,
+    password_enc: "str | None" = None,
+) -> str:
+    """`login`/`password_enc` — "queue" rejimida navbatga qo'yilgan buyurtmani
+    keyinroq AYNAN shu kassir nomidan sinxronlash uchun kerak (sync soatlab
+    keyin ishlaganda, bu sessiya allaqachon tugagan bo'lishi mumkin — shu
+    sabab checkout paytida bu qiymatlar Sheets qatoriga ko'chirib qo'yiladi,
+    main.py'ga qarang). `password_enc` — crypto.py orqali OLDINDAN shifrlangan
+    qiymat, hech qachon ochiq (plaintext) holda saqlanmaydi."""
     session_id = secrets.token_urlsafe(32)
     _sessions[session_id] = {
         "token": token,
         "employee_name": employee_name,
+        "login": login,
+        "password_enc": password_enc,
         "created": time.time(),
     }
     return session_id
