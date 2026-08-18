@@ -212,16 +212,13 @@ Kassirlar "Tarix" ekranida hali sinxronlanmagan buyurtmalarni "Kutilmoqda"
 statusi bilan ko'radi va ular sinxronlanmaguncha erkin tahrirlashi
 (miqdorini o'zgartirish) yoki butunlay bekor qilishi mumkin.
 
-**Har bir buyurtma AYNAN o'sha buyurtmani kiritgan kassirning o'z nomidan**
-MoySklad'ga yuboriladi (bitta umumiy/admin hisob emas) — shunday qilib
-MoySklad'da qaysi kassir nimani sotgani hozirgidek aniq ko'rinadi. Buning
-uchun kassirning paroli (`crypto.py`, Fernet bilan shifrlangan holda) checkout
-paytida Sheets qatoriga yozib qo'yiladi, sync esa uni hal qilib, aynan shu
-kassir uchun yangi token oladi. **Muhim oqibat**: agar shu kassir sync
-ishlagan payt (00:00/06:00/12:00/18:00) ilovada ham faol bo'lsa, MoySklad bir
-login uchun faqat bitta faol token saqlagani sabab uning joriy sessiyasi
-kutilmaganda uzilib, qayta kirishga to'g'ri kelishi mumkin — bu ongli
-ravishda qabul qilingan almashinuv (kassir izini saqlash uchun).
+Barcha kassirlar bitta umumiy MoySklad hisobidan foydalanadi — shuning uchun
+sinxronlash ham shu bitta hisob (`MS_SYNC_LOGIN`/`MS_SYNC_PASSWORD`) nomidan
+ishlaydi, alohida xodim yaratish shart emas. **Diqqat**: agar shu login
+sinxronlash ishlagan payt (00:00/06:00/12:00/18:00) ilovada ham faol
+ishlatilayotgan bo'lsa, MoySklad bir login uchun faqat bitta faol token
+saqlagani sabab joriy sessiya kutilmaganda uzilib, qayta kirishga to'g'ri
+kelishi mumkin — bu holda shunchaki qaytadan kirish yetarli.
 
 ### Sozlash
 
@@ -252,10 +249,9 @@ ravishda qabul qilingan almashinuv (kassir izini saqlash uchun).
    URL'dan olib `GOOGLE_SHEETS_SPREADSHEET_ID`ga qo'ying.
 4. `SYNC_TRIGGER_SECRET` yarating (`python -c "import secrets; print(secrets.token_urlsafe(32))"`)
    va Render'ga qo'ying.
-5. `CREDENTIAL_ENCRYPTION_KEY` — kassirlarning parolini (Sheets qatorida)
-   shifrlash uchun kalit: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
-   Bu bo'lmasa, "queue" rejimidagi checkout xato qaytaradi (chunki
-   sinxronlash uchun kimning nomidan yuborishni bilmaydi).
+5. `MS_SYNC_LOGIN`/`MS_SYNC_PASSWORD` — MoySklad'ga navbatdagi buyurtmalarni
+   yuborish uchun ishlatiladigan login/parol (odatda barcha kassirlar
+   ishlatadigan umumiy hisobning o'zi).
 6. `EXPECTED_MS_ORGANIZATION_ID` — MoySklad'dagi `entity/organization` UUID'i
    (MoySklad'ning o'zida yoki API orqali topish mumkin).
 7. Google Sheet ichida: **Extensions → Apps Script**, quyidagi kabi funksiya
@@ -295,15 +291,12 @@ ravishda qabul qilingan almashinuv (kassir izini saqlash uchun).
 
 ### Bilinadigan cheklovlar
 
-- Faqat bitta MoySklad tashkiloti uchun ishlaydi (bitta Sheet).
-- Sync har bir buyurtmani o'sha kassirning o'z login-paroli bilan yuboradi —
-  agar sync ishlagan payt (00:00/06:00/12:00/18:00) o'sha kassir ilovada
-  faol bo'lsa, uning sessiyasi kutilmaganda uzilishi mumkin (yuqoridagi
-  "Nega kerak..." bo'limiga qarang).
-- Agar kassir MoySklad parolini o'zgartirsa, undan OLDIN navbatga qo'yilgan
-  (hali sinxronlanmagan) buyurtmalar eski parol bilan sinxronlanishga
-  urinadi va "Xato" (`failed`) holatiga tushadi — bunday holatda buyurtmani
-  o'chirib, kassir qaytadan kiritishi kerak bo'ladi.
+- Faqat bitta MoySklad tashkiloti uchun ishlaydi (bitta Sheet, bitta sync
+  login).
+- Sync ishlagan payt (00:00/06:00/12:00/18:00), agar shu login ilovada ham
+  faol ishlatilayotgan bo'lsa, joriy sessiya kutilmaganda uzilishi mumkin —
+  bunday holatda shunchaki qaytadan kirish kifoya (yuqoridagi "Nega kerak..."
+  bo'limiga qarang).
 - Sinxronlash jarayoni navbatdagi buyurtmani yaratishda kutilmagan xatoga
   uchrasa (masalan MoySklad'dagi orqaga qaytarish — rollback — o'zi ham
   muvaffaqiyatsiz tugasa), qator "Tekshirish kerak" (`needs_manual_check`)

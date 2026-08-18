@@ -6,4 +6,3 @@ pydantic>=2.9
 python-telegram-bot>=21.0
 gspread>=6.0
 google-auth>=2.0
-cryptography>=42.0

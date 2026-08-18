@@ -34,13 +34,11 @@ CHECKOUT_MODE = os.getenv("CHECKOUT_MODE", "direct").strip().lower()
 # aralashib ketmasligi uchun.
 EXPECTED_MS_ORGANIZATION_ID = os.getenv("EXPECTED_MS_ORGANIZATION_ID", "").strip() or None
 
-# Sinxronlash HAR BIR buyurtmani AYNAN o'sha buyurtmani kiritgan kassirning
-# o'z nomidan MoySklad'ga yuboradi (kassir ismini emas, umumiy hisobni
-# ishlatish o'rniga) — shuning uchun kassirning paroli checkout paytida
-# shifrlab (crypto.py, Fernet) Sheets qatoriga yozib qo'yiladi, sync esa uni
-# hal qilib, ANIQ shu kassir nomidan yangi token oladi. Shu kalit — shifrlash
-# uchun, generatsiya: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-CREDENTIAL_ENCRYPTION_KEY = os.getenv("CREDENTIAL_ENCRYPTION_KEY", "").strip() or None
+# Sinxronlash vazifasi MoySklad'ga navbatdagi buyurtmalarni yuborish uchun
+# ishlatadigan login/parol — barcha kassirlar bitta umumiy MoySklad hisobidan
+# foydalangani uchun, bu odatda ular ishlatadigan hisobning o'zi.
+MS_SYNC_LOGIN = os.getenv("MS_SYNC_LOGIN", "").strip() or None
+MS_SYNC_PASSWORD = os.getenv("MS_SYNC_PASSWORD", "").strip() or None
 
 # Google Apps Script trigger shu maxfiy qiymatni "X-Sync-Secret" header'ida
 # yuborishi kerak — bo'lmasa /api/sync/run so'rovni rad etadi.

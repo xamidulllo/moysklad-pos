@@ -28,7 +28,6 @@ _SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 COLUMNS = [
     "order_id", "status", "created_at", "edited_at", "cashier_name",
-    "cashier_login", "cashier_password_enc",
     "store_id", "store_name", "agent_name", "items_summary", "total_sum",
     "currency_name", "is_debt", "payload_json", "chain_started_at",
     "last_attempt_at", "last_error", "synced_at",
@@ -125,6 +124,14 @@ def _open_worksheet_sync() -> gspread.Worksheet:
     values = ws.get_all_values()
     if not values or values[0][: len(COLUMNS)] != COLUMNS:
         ws.update("A1", [COLUMNS])
+        # Sxema o'zgarganda (masalan ustun soni kamaysa) eski sarlavha
+        # qatoridan uzunroq bo'lgan "qoldiq" katakchalar tozalanmasdan
+        # qolib ketmasligi uchun — ular chalkashlik keltirib chiqarishi mumkin.
+        old_len = len(values[0]) if values else 0
+        if old_len > len(COLUMNS):
+            extra_col_letter_start = gspread.utils.rowcol_to_a1(1, len(COLUMNS) + 1).rstrip("1")
+            extra_col_letter_end = gspread.utils.rowcol_to_a1(1, old_len).rstrip("1")
+            ws.batch_clear([f"{extra_col_letter_start}1:{extra_col_letter_end}1"])
     return ws
 
 
@@ -189,8 +196,6 @@ def _append_row_sync(ws: gspread.Worksheet, row_values: list) -> None:
 async def append_pending_order(
     order_id: str,
     cashier_name: str,
-    cashier_login: str,
-    cashier_password_enc: "str | None",
     store_id: "str | None",
     store_name: "str | None",
     agent_name: "str | None",
@@ -204,8 +209,6 @@ async def append_pending_order(
         "order_id": order_id,
         "status": STATUS_PENDING,
         "created_at": now_iso(),
-        "cashier_login": cashier_login,
-        "cashier_password_enc": cashier_password_enc or "",
         "edited_at": "",
         "cashier_name": cashier_name or "",
         "store_id": store_id or "",
