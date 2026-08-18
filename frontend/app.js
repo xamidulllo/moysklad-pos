@@ -23,6 +23,7 @@ const API = {
   projects: "/api/projects",
   checkout: "/api/checkout",
   orderHistory: "/api/orders/history",
+  pendingOrder: (orderId) => `/api/orders/pending/${encodeURIComponent(orderId)}`,
 };
 
 const state = {
@@ -46,7 +47,15 @@ const state = {
   selectedAccount: null, // accounts ro'yxatidagi element
   projects: [], // [{id, meta, name}] — entity/project ro'yxati
   selectedProject: null,
+  historyItems: [], // /api/orders/history'dan kelgan xom ro'yxat
 };
+
+// Hali sinxronlanmagan (pending/failed) buyurtmalar uchun mahalliy tahrirlash
+// nusxasi: order_id -> items[] (server'dan kelgan items'ning ishchi nusxasi,
+// +/- va o'chirish tugmalari shuni o'zgartiradi, keyin debounce bilan
+// PATCH orqali serverga yuboriladi).
+const pendingEditState = {};
+const _pendingPatchTimers = {};
 
 // ---------------- Yordamchi funksiyalar ----------------
 
@@ -122,6 +131,27 @@ async function apiPost(url, body) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) showLoginScreen();
+  if (!res.ok) throw { status: res.status, detail: data.detail ?? data };
+  return data;
+}
+
+async function apiPatch(url, body) {
+  const res = await fetch(url, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) showLoginScreen();
+  if (!res.ok) throw { status: res.status, detail: data.detail ?? data };
+  return data;
+}
+
+async function apiDelete(url) {
+  const res = await fetch(url, { method: "DELETE", credentials: "include" });
   const data = await res.json().catch(() => ({}));
   if (res.status === 401) showLoginScreen();
   if (!res.ok) throw { status: res.status, detail: data.detail ?? data };
@@ -725,6 +755,8 @@ async function handlePay() {
       assortment_meta: i.meta,
       quantity: i.quantity,
       price: i.price,
+      id: i.id,
+      name: i.name,
     })),
     is_debt: isDebt,
     comment: document.getElementById("orderComment").value.trim() || null,
@@ -733,6 +765,12 @@ async function handlePay() {
     // shuning uchun bu maydonlar to'lov mavjud/yo'qligidan qat'i nazar yuboriladi.
     currency_meta: cartCurrencyIsForeign && cartCurrency ? cartCurrency.meta : null,
     exchange_rate: cartCurrencyIsForeign ? state.cartRate : 1,
+    // Faqat ko'rsatish uchun (flat) — agar backend buyurtmani Google Sheets
+    // navbatiga yozsa, MoySklad'ga qo'shimcha so'rov yubormasdan qatorni
+    // odam o'qiy oladigan qilish uchun ishlatiladi.
+    store_name: state.selectedStore.name,
+    agent_name: state.selectedAgent.name,
+    currency_name: (cartCurrencyIsForeign && cartCurrency ? cartCurrency : defaultCurrency())?.name ?? null,
   };
 
   if (!isDebt) {
@@ -748,9 +786,18 @@ async function handlePay() {
     showLoading(true);
     document.getElementById("payBtn").disabled = true;
     const result = await apiPost(API.checkout, payload);
-    const message = result.payment
-      ? `To'lov muvaffaqiyatli amalga oshirildi: Buyurtma #${result.order.name}`
-      : `Qarzga sotildi: Buyurtma #${result.order.name} (to'lov kiritilmadi)`;
+    let message;
+    if (result.mode === "queue") {
+      // Hech narsa hali MoySklad'ga yozilmagan — buyurtma Google Sheets
+      // navbatiga qo'yildi, davriy sync uni keyinroq ko'chiradi. Shu sabab
+      // "to'lov muvaffaqiyatli" kabi so'z ishlatilmaydi — bu hali noto'g'ri
+      // bo'lardi.
+      message = "Buyurtma navbatga qo'yildi — keyingi sinxronizatsiyada MoySklad'ga yuboriladi";
+    } else {
+      message = result.payment
+        ? `To'lov muvaffaqiyatli amalga oshirildi: Buyurtma #${result.order.name}`
+        : `Qarzga sotildi: Buyurtma #${result.order.name} (to'lov kiritilmadi)`;
+    }
     showToast(message);
     resetAfterPayment();
   } catch (err) {
@@ -937,41 +984,196 @@ function formatHistoryMoment(moment) {
   });
 }
 
+const PENDING_STATUS_LABELS = {
+  pending: "Kutilmoqda",
+  failed: "Xato",
+  needs_manual_check: "Tekshirish kerak",
+};
+
 async function loadHistory() {
   historyHint.textContent = "Yuklanmoqda...";
   historyHint.classList.remove("hidden");
   historyList.innerHTML = "";
   try {
     const data = await apiGet(API.orderHistory);
-    const items = data.items || [];
-    if (!items.length) {
-      historyHint.textContent = "Hozircha buyurtmalar yo'q";
-      return;
-    }
-    historyHint.classList.add("hidden");
-    items.forEach((item) => {
-      const cur = currencyById(item.currency_id) || defaultCurrency();
-      const card = document.createElement("div");
-      card.className = "history-card";
-      card.innerHTML = `
-        <div class="history-card-top">
-          <span class="history-name">${escapeHtml(item.name || "")}</span>
-          <span class="history-status ${item.is_paid ? "paid" : "unpaid"}">${
-        item.is_paid ? "To'langan" : "To'lanmagan"
-      }</span>
-        </div>
-        <div class="history-agent">${escapeHtml(item.agent_name || "")}</div>
-        <div class="history-card-bottom">
-          <span class="history-moment">${escapeHtml(formatHistoryMoment(item.moment))}</span>
-          <span class="history-sum">${escapeHtml(formatWithLabel(item.sum, cur ? cur.name : ""))}</span>
-        </div>
-        ${item.comment ? `<div class="history-comment">${escapeHtml(item.comment)}</div>` : ""}
-      `;
-      historyList.appendChild(card);
+    state.historyItems = data.items || [];
+    // Har bir hali tahrirlanadigan (pending/failed) buyurtma uchun mahalliy
+    // ishchi nusxa — serverdan qayta kelgan har safar qayta boshlanadi.
+    for (const key of Object.keys(pendingEditState)) delete pendingEditState[key];
+    state.historyItems.forEach((item) => {
+      if ((item.status === "pending" || item.status === "failed") && Array.isArray(item.items)) {
+        pendingEditState[item.id] = item.items.map((i) => ({ ...i }));
+      }
     });
+    renderHistoryList();
   } catch (err) {
     historyHint.textContent = "Yuklashda xatolik: " + extractErrorMessage(err);
     historyHint.classList.remove("hidden");
+  }
+}
+
+function renderHistoryList() {
+  const items = state.historyItems;
+  if (!items.length) {
+    historyHint.textContent = "Hozircha buyurtmalar yo'q";
+    historyHint.classList.remove("hidden");
+    historyList.innerHTML = "";
+    return;
+  }
+  historyHint.classList.add("hidden");
+  historyList.innerHTML = "";
+  items.forEach((item) => {
+    historyList.appendChild(
+      item.status && item.status !== "synced" ? renderPendingHistoryCard(item) : renderSyncedHistoryCard(item)
+    );
+  });
+  wireHistoryCardEvents();
+}
+
+function renderSyncedHistoryCard(item) {
+  const cur = currencyById(item.currency_id) || defaultCurrency();
+  const card = document.createElement("div");
+  card.className = "history-card";
+  card.innerHTML = `
+    <div class="history-card-top">
+      <span class="history-name">${escapeHtml(item.name || "")}</span>
+      <span class="history-status ${item.is_paid ? "paid" : "unpaid"}">${
+    item.is_paid ? "To'langan" : "To'lanmagan"
+  }</span>
+    </div>
+    <div class="history-agent">${escapeHtml(item.agent_name || "")}</div>
+    <div class="history-card-bottom">
+      <span class="history-moment">${escapeHtml(formatHistoryMoment(item.moment))}</span>
+      <span class="history-sum">${escapeHtml(formatWithLabel(item.sum, cur ? cur.name : ""))}</span>
+    </div>
+    ${item.comment ? `<div class="history-comment">${escapeHtml(item.comment)}</div>` : ""}
+  `;
+  return card;
+}
+
+// Hali MoySklad'ga sinxronlanmagan buyurtma — status "pending"/"failed"/
+// "needs_manual_check". "pending"/"failed" uchun tovar miqdorini +/- bilan
+// tahrirlash va butun buyurtmani bekor qilish mumkin (savat ekranidagi
+// bilan bir xil qty-btn/remove-btn naqshi ishlatiladi) — "needs_manual_check"
+// faqat o'qish uchun (egasi qo'lda tekshirishi kerak).
+function renderPendingHistoryCard(item) {
+  const editable = item.status === "pending" || item.status === "failed";
+  const workingItems = editable ? pendingEditState[item.id] || [] : item.items || [];
+  const total = workingItems.reduce((s, i) => s + i.price * i.quantity, 0) || item.sum || 0;
+  const currencyLabel = item.currency_name || "";
+
+  const card = document.createElement("div");
+  card.className = "history-card pending-order";
+  card.dataset.orderId = item.id;
+  card.innerHTML = `
+    <div class="history-card-top">
+      <span class="history-name">${escapeHtml(item.items_summary || "Buyurtma")}</span>
+      <span class="history-status ${escapeHtml(item.status)}">${escapeHtml(
+    PENDING_STATUS_LABELS[item.status] || item.status
+  )}</span>
+    </div>
+    <div class="history-agent">${escapeHtml(item.agent_name || "")}</div>
+    <div class="history-card-bottom">
+      <span class="history-moment">${escapeHtml(formatHistoryMoment(item.moment))}</span>
+      <span class="history-sum">${escapeHtml(formatWithLabel(total, currencyLabel))}</span>
+    </div>
+    ${
+      item.status === "failed" && item.last_error
+        ? `<div class="history-error">${escapeHtml(item.last_error)}</div>`
+        : ""
+    }
+    ${
+      editable
+        ? `<div class="pending-items">${workingItems
+            .map(
+              (i, idx) => `
+          <div class="cart-item">
+            <div class="cart-item-top">
+              <div class="cart-item-name">${escapeHtml(i.name || "Tovar")}</div>
+            </div>
+            <div class="cart-item-bottom">
+              <div class="qty-control">
+                <button class="qty-btn pending-qty-btn" data-order="${item.id}" data-idx="${idx}" data-delta="-1" type="button">−</button>
+                <span class="qty-value">${i.quantity}</span>
+                <button class="qty-btn pending-qty-btn" data-order="${item.id}" data-idx="${idx}" data-delta="1" type="button">+</button>
+              </div>
+              <div class="line-total">${formatWithLabel(i.price * i.quantity, currencyLabel)}</div>
+            </div>
+          </div>`
+            )
+            .join("")}</div>
+        <button class="remove-btn pending-cancel-btn" data-order="${item.id}" type="button">Buyurtmani bekor qilish</button>`
+        : `<div class="history-comment">${escapeHtml(item.items_summary || "")}</div>`
+    }
+  `;
+  return card;
+}
+
+function wireHistoryCardEvents() {
+  historyList.querySelectorAll(".pending-qty-btn").forEach((btn) => {
+    btn.addEventListener("click", () =>
+      changePendingItemQty(btn.dataset.order, Number(btn.dataset.idx), Number(btn.dataset.delta))
+    );
+  });
+  historyList.querySelectorAll(".pending-cancel-btn").forEach((btn) => {
+    btn.addEventListener("click", () => cancelPendingOrder(btn.dataset.order));
+  });
+}
+
+function changePendingItemQty(orderId, itemIndex, delta) {
+  const items = pendingEditState[orderId];
+  if (!items) return;
+  const item = items[itemIndex];
+  if (!item) return;
+  item.quantity += delta;
+  if (item.quantity <= 0) {
+    if (items.length <= 1) {
+      // Oxirgi qator — butun buyurtmani bekor qilishni so'raymiz, "bo'sh"
+      // buyurtma qoldirmaymiz (backend ham buni rad etadi).
+      cancelPendingOrder(orderId);
+      return;
+    }
+    items.splice(itemIndex, 1);
+  }
+  renderHistoryList();
+  schedulePendingPatch(orderId);
+}
+
+function schedulePendingPatch(orderId) {
+  clearTimeout(_pendingPatchTimers[orderId]);
+  _pendingPatchTimers[orderId] = setTimeout(() => sendPendingPatch(orderId), 500);
+}
+
+async function sendPendingPatch(orderId) {
+  const items = pendingEditState[orderId];
+  if (!items || !items.length) return;
+  try {
+    await apiPatch(API.pendingOrder(orderId), {
+      items: items.map((i) => ({
+        assortment_meta: i.assortment_meta,
+        quantity: i.quantity,
+        price: i.price,
+        id: i.id,
+        name: i.name,
+      })),
+    });
+  } catch (err) {
+    showToast("Buyurtmani tahrirlashda xatolik: " + extractErrorMessage(err), true);
+    loadHistory(); // server bilan qayta sinxronlash — mahalliy holat eskirgan bo'lishi mumkin
+  }
+}
+
+async function cancelPendingOrder(orderId) {
+  if (!window.confirm("Bu buyurtmani bekor qilishni tasdiqlaysizmi?")) return;
+  try {
+    showLoading(true);
+    await apiDelete(API.pendingOrder(orderId));
+    showToast("Buyurtma bekor qilindi");
+    await loadHistory();
+  } catch (err) {
+    showToast("Bekor qilishda xatolik: " + extractErrorMessage(err), true);
+  } finally {
+    showLoading(false);
   }
 }
 

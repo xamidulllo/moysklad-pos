@@ -16,3 +16,38 @@ SESSION_COOKIE_NAME = "pos_session"
 SESSION_TTL_HOURS = float(os.getenv("SESSION_TTL_HOURS", "12"))
 # Productionda HTTPS orqali ishga tushirilganda .env'da SESSION_COOKIE_SECURE=true qiling.
 SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").strip().lower() == "true"
+
+# ---------------------------------------------------------------------------
+# Google Sheets orqali buyurtmalarni navbatga qo'yish va MoySklad'ga davriy
+# sinxronlash (ixtiyoriy funksiya — quyidagi o'zgaruvchilar sozlanmagan bo'lsa,
+# checkout hozirgidek to'g'ridan-to'g'ri MoySklad'ga yozadi).
+# ---------------------------------------------------------------------------
+
+# "direct" — checkout darhol MoySklad'ga yozadi (hozirgi/standart xatti-harakat).
+# "queue" — checkout faqat EXPECTED_MS_ORGANIZATION_ID'ga mos MoySklad hisobi
+# uchun Google Sheets navbatiga yoziladi; boshqa har qanday login uchun baribir
+# to'g'ridan-to'g'ri yoziladi (bu funksiya faqat bitta tashkilot uchun sozlangan).
+CHECKOUT_MODE = os.getenv("CHECKOUT_MODE", "direct").strip().lower()
+
+# Navbatga qo'yish faqat aynan shu MoySklad tashkilotining login'lari uchun
+# ishlaydi (entity/organization href'idagi UUID) — boshqa hisoblar bilan
+# aralashib ketmasligi uchun.
+EXPECTED_MS_ORGANIZATION_ID = os.getenv("EXPECTED_MS_ORGANIZATION_ID", "").strip() or None
+
+# Sinxronlash vazifasi MoySklad'ga navbatdagi buyurtmalarni yuborish uchun
+# ishlatadigan login/parol — kassirning shaxsiy tokeniga tayanmaydi (u vaqtinchalik
+# va xotirada saqlanadi). Qo'shimcha xodim yaratish shart emas — mavjud
+# (masalan egasi/administrator) login ishlatilishi mumkin.
+MS_SYNC_LOGIN = os.getenv("MS_SYNC_LOGIN", "").strip() or None
+MS_SYNC_PASSWORD = os.getenv("MS_SYNC_PASSWORD", "").strip() or None
+
+# Google Apps Script trigger shu maxfiy qiymatni "X-Sync-Secret" header'ida
+# yuborishi kerak — bo'lmasa /api/sync/run so'rovni rad etadi.
+SYNC_TRIGGER_SECRET = os.getenv("SYNC_TRIGGER_SECRET", "").strip() or None
+
+# Google service-account JSON kaliti, base64'da (Render kabi veb-panellarda
+# ko'p qatorli JSON'ni to'g'ridan-to'g'ri joylashtirish "private_key"dagi "\n"
+# belgilarini buzib qo'yishi ma'lum muammo — base64 buni butunlay oldini oladi).
+GOOGLE_SERVICE_ACCOUNT_JSON_B64 = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "").strip() or None
+GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip() or None
+GOOGLE_SHEETS_WORKSHEET_NAME = os.getenv("GOOGLE_SHEETS_WORKSHEET_NAME", "Orders").strip()

@@ -12,6 +12,8 @@ class CartItemIn(BaseModel):
     assortment_meta: dict = Field(..., description="MoySklad mahsulot/modifikatsiya meta obyekti")
     quantity: float = Field(..., gt=0)
     price: float = Field(..., ge=0, description="Bir dona narxi so'mda (tiyinda emas)")
+    id: Optional[str] = Field(None, description="MoySklad assortment ID — Sheets navbati/qoldiq keshi uchun")
+    name: Optional[str] = Field(None, description="Mahsulot nomi — Sheets qatorida/tahrirlash ekranida ko'rsatish uchun")
 
 
 class CheckoutRequest(BaseModel):
@@ -30,11 +32,27 @@ class CheckoutRequest(BaseModel):
     )
     project_meta: Optional[dict] = Field(None, description="entity/project meta obyekti (ixtiyoriy)")
 
+    # Faqat ko'rsatish uchun (flat) — checkout mantig'ida ISHLATILMAYDI, faqat
+    # navbatga qo'yilganda Google Sheets qatoriga yozib qo'yish uchun, shunda
+    # sync jarayoni bu qiymatlarni olish uchun qo'shimcha MoySklad so'rovi
+    # yubormaydi (navbatga qo'yish MoySklad'ga umuman tegmasligi kerak).
+    store_name: Optional[str] = None
+    agent_name: Optional[str] = None
+    currency_name: Optional[str] = None
+
     @model_validator(mode="after")
     def _require_payment_fields_unless_debt(self):
         if not self.is_debt and (not self.account_meta or not self.document_type):
             raise ValueError("account_meta va document_type qarzga bo'lmagan sotuv uchun majburiy")
         return self
+
+
+class PendingOrderItemsEdit(BaseModel):
+    """Hali sinxronlanmagan (Sheets navbatidagi) buyurtmaning miqdor/narxini
+    tahrirlash — faqat items, boshqa maydonlar (mijoz/hisob/tashkilot)
+    o'zgarmaydi (o'zgartirish kerak bo'lsa — o'chirib, qaytadan kiritiladi)."""
+
+    items: list[CartItemIn] = Field(..., min_length=1)
 
 
 class CounterpartyCreate(BaseModel):

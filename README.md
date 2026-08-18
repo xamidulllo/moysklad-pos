@@ -180,6 +180,110 @@ nechta muhim xususiyat aniqlandi:
 - 401 (sessiya tugagan/yaroqsiz) kelsa, ilova avtomatik kirish ekraniga qaytaradi.
 - Tarmoq yoki server xatosida ilova qulamaydi — foydalanuvchi qayta urinishi mumkin.
 
+## Google Sheets navbati va davriy MoySklad sinxronlash (ixtiyoriy)
+
+Standart holatda checkout hozirgidek ishlaydi: "To'lash" bosilganda buyurtma
+**darhol** MoySklad'ga yoziladi (yuqoridagi "Ishlash tartibi"ga qarang).
+
+Bundan tashqari, checkout **ikkinchi rejimda** ham ishlashi mumkin: buyurtma
+MoySklad'ga tegmasdan avval Google Sheets'dagi bitta jadvalga ("navbat")
+qator sifatida yoziladi, so'ng Google Apps Script'ning davriy trigger'i
+(kuniga 4 marta: 00:00, 06:00, 12:00, 18:00, Asia/Tashkent) backend'ning
+`/api/sync/run` marshrutini chaqiradi — shu marshrut navbatdagi barcha
+buyurtmalarni MoySklad'ga bittalab, xuddi to'g'ridan-to'g'ri checkout'dagi
+kabi (customerorder → demand → to'lov) ko'chiradi.
+
+**Bu rejim faqat bitta MoySklad tashkiloti uchun yoqiladi** (quyidagi
+`EXPECTED_MS_ORGANIZATION_ID`) — boshqa har qanday login bilan kirgan
+kassirlar (masalan test hisobi) baribir to'g'ridan-to'g'ri, real vaqtda
+checkout qilishda davom etadi.
+
+### Nega kerak bo'lishi mumkin, va qanday xavfsiz qilingan
+
+Buyurtmani darhol emas, keyinroq (kuniga 4 marta) MoySklad'ga yozish — eng
+katta xavfi ombor qoldig'ining eskirib qolishi: agar ikki kassir bir xil
+oxirgi donani ketma-ket sotsa, MoySklad buni darhol bilmaydi. Shu sabab
+navbatga qo'yilgan HAR BIR buyurtma miqdori **darhol**, xotirada
+(`backend/app/stock_cache.py`) MoySklad'ning jonli qoldig'idan ayirib
+ko'rsatiladi — "Omborda: N dona" har doim navbatdagi buyurtmalarni hisobga
+olib ko'rsatiladi, garchi ular hali MoySklad'ning o'zida yo'q bo'lsa ham.
+
+Kassirlar "Tarix" ekranida hali sinxronlanmagan buyurtmalarni "Kutilmoqda"
+statusi bilan ko'radi va ular sinxronlanmaguncha erkin tahrirlashi
+(miqdorini o'zgartirish) yoki butunlay bekor qilishi mumkin.
+
+### Sozlash
+
+1. **Google Cloud Console**: yangi loyiha (yoki mavjudini tanlang), **Google
+   Sheets API**'ni yoqing, so'ng IAM & Admin → Service Accounts orqali
+   service-account yarating va uning uchun JSON kalit yuklab oling.
+2. Yangi Google Sheet yarating, uni **service-account'ning `client_email`
+   manzili bilan Editor huquqi bilan ulashing** (bu qadam tez-tez unutiladi
+   — bo'lmasa backend jadvalni "topolmaydi").
+3. JSON kalitni base64'ga o'giring va Render'da `GOOGLE_SERVICE_ACCOUNT_JSON_B64`
+   sifatida saqlang (PowerShell: `[Convert]::ToBase64String([IO.File]::ReadAllBytes("kalit.json"))`).
+4. Sheet URL'idagi ID'ni `GOOGLE_SHEETS_SPREADSHEET_ID`ga qo'ying.
+5. `SYNC_TRIGGER_SECRET` yarating (`python -c "import secrets; print(secrets.token_urlsafe(32))"`)
+   va Render'ga qo'ying.
+6. `MS_SYNC_LOGIN`/`MS_SYNC_PASSWORD` — MoySklad'ga navbatdagi buyurtmalarni
+   yuborish uchun ishlatiladigan **mavjud** login/parol (yangi xodim
+   yaratish shart emas — MoySklad qo'shimcha xodim uchun pul so'raydi).
+   **Diqqat**: agar shu login boshqa joyda (masalan sizning brauzeringizda
+   yoki boshqa avtomatlashtirish) bir vaqtda ishlatilsa, MoySklad bir login
+   uchun faqat bitta faol token saqlagani sabab tokenlar to'qnashishi
+   mumkin — bu qabul qilingan xavf.
+7. `EXPECTED_MS_ORGANIZATION_ID` — MoySklad'dagi `entity/organization` UUID'i
+   (MoySklad'ning o'zida yoki API orqali topish mumkin).
+8. Google Sheet ichida: **Extensions → Apps Script**, quyidagi kabi funksiya
+   qo'shing (BACKEND_URL/SYNC_SECRET qiymatlarini kodga yozmang — Project
+   Settings → Script Properties'ga saqlang):
+
+   ```javascript
+   function triggerSync() {
+     const props = PropertiesService.getScriptProperties();
+     const res = UrlFetchApp.fetch(props.getProperty('BACKEND_URL') + '/api/sync/run', {
+       method: 'post',
+       headers: { 'X-Sync-Secret': props.getProperty('SYNC_SECRET') },
+       muteHttpExceptions: true,
+     });
+     Logger.log(res.getContentText());
+   }
+
+   function installTriggers() {
+     ScriptApp.getProjectTriggers().forEach(t => ScriptApp.deleteTrigger(t));
+     [0, 6, 12, 18].forEach(hour => {
+       ScriptApp.newTrigger('triggerSync').timeBased().atHour(hour).everyDays(1).create();
+     });
+   }
+   ```
+
+   **Muhim**: trigger yaratishdan OLDIN loyihaning **Project Settings → Time
+   zone**'ini `Asia/Tashkent`ga o'rnating — aks holda `atHour(H)` GMT+5 emas,
+   loyihaning standart vaqt zonasi bo'yicha ishga tushadi. `installTriggers()`'ni
+   Apps Script muharririda **bir marta** qo'lda ishga tushiring (har safar
+   ishga tushirilsa, eski trigger'lar tozalanib qayta yaratiladi — bu funksiya
+   shunga mo'ljallangan).
+9. Hammasi tayyor bo'lgach, `CHECKOUT_MODE=queue` qiling va Render'ga deploy
+   qiling. **Tavsiya**: avval `CHECKOUT_MODE=direct` bilan deploy qilib,
+   `POST /api/sync/run`'ni qo'lda (masalan curl bilan, `X-Sync-Secret` header
+   bilan) sinab ko'ring, keyin `queue`ga o'tkazing — bu haqiqiy pul/ombor
+   bilan ishlaydigan tizim, shoshilinch emas.
+
+### Bilinadigan cheklovlar
+
+- Faqat bitta MoySklad tashkiloti uchun ishlaydi (bitta Sheet, bitta sync
+  login).
+- Sinxronlash jarayoni navbatdagi buyurtmani yaratishda kutilmagan xatoga
+  uchrasa (masalan MoySklad'dagi orqaga qaytarish — rollback — o'zi ham
+  muvaffaqiyatsiz tugasa), qator "Tekshirish kerak" (`needs_manual_check`)
+  holatiga o'tadi — bu holat uchun ilovada alohida ekran yo'q, Sheet'ning
+  o'zida qatorni qo'lda ko'rib chiqish kerak bo'ladi (qatordagi
+  `ms_order_id`/`externalCode` orqali MoySklad'da qidiring).
+- Render bepul tarifi harakatsizlikdan keyin "uxlab qoladi" — Apps
+  Script trigger'i shu paytga to'g'ri kelsa, so'rov vaqt tugashi (timeout)
+  bilan tugashi mumkin. Bu xavfli emas: buyurtma "Kutilmoqda" holatida
+  qolaveradi, keyingi (6 soatdan keyingi) trigger uni qayta sinab ko'radi.
+
 ## Eslatmalar
 
 - PWA ikonkasi sifatida vaqtinchalik `frontend/icon.svg` ishlatilmoqda (Android/Chrome

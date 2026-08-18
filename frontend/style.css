@@ -485,6 +485,21 @@ main {
   color: var(--danger);
 }
 
+.history-status.pending {
+  background: rgba(234, 179, 8, 0.18);
+  color: #eab308;
+}
+
+.history-status.failed {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--danger);
+}
+
+.history-status.needs_manual_check {
+  background: rgba(148, 163, 184, 0.2);
+  color: var(--text-dim);
+}
+
 .history-agent {
   color: var(--text-dim);
   font-size: 0.85rem;
@@ -513,6 +528,36 @@ main {
   border-top: 1px solid var(--border);
   color: var(--text-dim);
   font-size: 0.82rem;
+}
+
+.history-error {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--danger);
+  font-size: 0.82rem;
+}
+
+.pending-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.pending-order .cart-item {
+  background: var(--surface-2);
+  padding: 10px 12px;
+}
+
+.pending-order .pending-cancel-btn {
+  margin-top: 10px;
+  width: 100%;
+  text-align: center;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
 
 .primary-btn {

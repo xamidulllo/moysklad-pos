@@ -15,9 +15,9 @@ import secrets
 import time
 from typing import Optional
 
-from fastapi import Cookie, HTTPException
+from fastapi import Cookie, Header, HTTPException
 
-from .config import SESSION_TTL_HOURS
+from .config import SESSION_TTL_HOURS, SYNC_TRIGGER_SECRET
 
 _sessions: dict[str, dict] = {}
 
@@ -61,3 +61,12 @@ async def get_current_token(pos_session: Optional[str] = Cookie(default=None)) -
     if not session:
         raise HTTPException(status_code=401, detail="Tizimga kirish talab qilinadi")
     return session["token"]
+
+
+async def require_sync_secret(x_sync_secret: Optional[str] = Header(default=None)) -> None:
+    """Faqat Google Apps Script trigger'i chaqirishi kerak bo'lgan /api/sync/run
+    marshrutini himoya qiladi. Maxfiy qiymat query parametrda emas, header'da
+    kutiladi — aks holda Render'ning kirish loglariga tushib qolardi.
+    secrets.compare_digest — vaqt hujumidan (timing attack) himoya uchun."""
+    if not SYNC_TRIGGER_SECRET or not x_sync_secret or not secrets.compare_digest(x_sync_secret, SYNC_TRIGGER_SECRET):
+        raise HTTPException(status_code=401, detail="Noto'g'ri yoki sozlanmagan sync maxfiy kaliti")

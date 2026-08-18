@@ -15,28 +15,68 @@ Marshrutlar:
   POST /api/checkout        — customerorder -> demand -> to'lov (cashin/paymentin) zanjirini yaratadi
   GET  /api/orders/history  — shu ilova orqali kiritilgan buyurtmalar tarixi (saleschannel bo'yicha)
 
+Endi checkout ikki rejimda ishlashi mumkin (config.CHECKOUT_MODE):
+  - "direct" (standart) — hozirgidek, checkout darhol MoySklad'ga yozadi.
+  - "queue" — FAQAT config.EXPECTED_MS_ORGANIZATION_ID'ga mos MoySklad hisobi
+    uchun: checkout MoySklad'ga tegmasdan Google Sheets navbatiga yozadi,
+    davriy sync (sync_job.py, Google Apps Script trigger orqali chaqiriladi)
+    buni keyinroq MoySklad'ga ko'chiradi. Boshqa har qanday login uchun
+    baravar to'g'ridan-to'g'ri yozadi.
+
 Har bir /api/* (login'dan tashqari) marshrut joriy kassir sessiyasini talab qiladi —
 MoySklad'ga so'rov shu kassirning shaxsiy tokeni bilan yuboriladi (auth.py'ga qarang).
 """
 import asyncio
-import time
+import json
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Callable, Awaitable, Optional
+from typing import Optional
+from uuid import uuid4
 
 from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from .auth import create_session, delete_session, get_current_session, get_current_token
+from . import sheets_client, stock_cache, sync_job
+from .auth import create_session, delete_session, get_current_session, get_current_token, require_sync_secret
 from .bot import start_bot, stop_bot
-from .config import MOYSKLAD_BASE_URL, SESSION_COOKIE_NAME, SESSION_COOKIE_SECURE, SESSION_TTL_HOURS
+from .cache import _cached
+from .checkout_chain import _get_default_currency_id, _get_pos_sales_channel_meta, execute_checkout_chain
+from .config import (
+    CHECKOUT_MODE,
+    EXPECTED_MS_ORGANIZATION_ID,
+    GOOGLE_SHEETS_SPREADSHEET_ID,
+    MOYSKLAD_BASE_URL,
+    SESSION_COOKIE_NAME,
+    SESSION_COOKIE_SECURE,
+    SESSION_TTL_HOURS,
+)
 from .moysklad_client import exchange_credentials_for_token, ms_request
-from .schemas import CheckoutRequest, CounterpartyCreate, LoginRequest
+from .schemas import CheckoutRequest, CounterpartyCreate, LoginRequest, PendingOrderItemsEdit
+from .utils import _id_from_href
+
+logger = logging.getLogger("moysklad_pos.main")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # "queue" rejimi Sheets'ni yagona ishonchli manba sifatida ishlatadi —
+    # xotiradagi qoldiq keshi (stock_cache) esa har ishga tushishda undan
+    # qaytadan quriladi (bu jarayon xotirasi, _sessions kabi, qayta ishga
+    # tushirilganda yo'qoladi). Sheets vaqtincha ishlamasa ham ilova butunlay
+    # to'xtab qolmasligi kerak (kassirlar hali ham kira olishi kerak) —
+    # shuning uchun xatolik faqat logga yoziladi, ishga tushirish davom etadi.
+    if CHECKOUT_MODE == "queue" and GOOGLE_SHEETS_SPREADSHEET_ID:
+        try:
+            rows = await sheets_client.get_all_rows()
+            stock_cache.rebuild_from_rows(rows)
+            logger.info("Ombor qoldiq keshi Sheets'dan tiklandi (%d qator)", len(rows))
+        except Exception:
+            logger.exception(
+                "Ombor qoldiq keshini Sheets'dan tiklab bo'lmadi — davom etiladi, "
+                "lekin navbatdagi buyurtmalar qoldiqqa hisobga olinmasligi mumkin"
+            )
     # Telegram bot FastAPI bilan bitta process ichida, fon vazifasi sifatida ishga
     # tushadi — BOT_TOKEN sozlanmagan bo'lsa (lokal dev), jim o'tkazib yuboriladi.
     await start_bot()
@@ -66,52 +106,6 @@ async def _no_cache_headers(request, call_next):
     response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
     response.headers["Pragma"] = "no-cache"
     return response
-
-# Oddiy xotiradagi kesh: hisoblar/tashkilotlar/omborlar har so'rovda o'zgarmaydi,
-# shuning uchun kassirning har bir checkout ekraniga kirishida MoySklad'ga urilmaymiz.
-# Kalitga token qo'shilgan — turli kassirlar (turli MoySklad hisoblari/huquqlari)
-# bir-birining keshlangan ma'lumotini ko'rmasligi uchun.
-_cache: dict[str, tuple[float, dict]] = {}
-CACHE_TTL_SECONDS = 60
-
-
-async def _cached(key: str, token: str, loader: Callable[[], Awaitable[dict]]) -> dict:
-    cache_key = f"{key}:{token}"
-    now = time.time()
-    hit = _cache.get(cache_key)
-    if hit and now - hit[0] < CACHE_TTL_SECONDS:
-        return hit[1]
-    value = await loader()
-    _cache[cache_key] = (now, value)
-    return value
-
-
-def _to_minor_units(sum_in_som: float) -> int:
-    """MoySklad summalarni tiyinda (kopeykada) kutadi: 1 so'm = 100 birlik."""
-    return round(sum_in_som * 100)
-
-
-def _id_from_href(href: str) -> str:
-    return href.rstrip("/").rsplit("/", 1)[-1]
-
-
-async def _get_default_currency_id(token: str) -> "str | None":
-    """Tashkilotning bazaviy (учетная) valyutasi ID'sini qaytaradi.
-
-    MoySklad qo'lda kiritilgan kursni ("rate.value") faqat bazaviy valyutadan
-    FARQLI valyutadagi to'lovlar uchun qabul qiladi — aks holda xato 3007
-    ("Нельзя задать курс валюты учета, отличный от 1") qaytaradi. Shu sabab
-    checkout paytida tanlangan hisob valyutasini shu bilan solishtiramiz.
-    """
-
-    async def loader():
-        data = await ms_request("GET", "/entity/currency", token=token, params={"limit": 100})
-        default_row = next((r for r in data.get("rows", []) if r.get("default")), None)
-        return {"id": default_row["id"] if default_row else None}
-
-    result = await _cached("default_currency", token, loader)
-    return result["id"]
-
 
 # MoySklad har bir yangi hisobda avtomatik yaratadigan standart "Цена продажи"
 # narx turining externalCode'i — hisoblar orasida barqaror qiymat (tizim tomonidan
@@ -145,35 +139,6 @@ async def _get_default_price_type_id(token: str) -> "str | None":
     return result["id"]
 
 
-_POS_SALES_CHANNEL_NAME = "POS Mini App"
-
-
-async def _get_pos_sales_channel_meta(token: str) -> dict:
-    """Shu ilova orqali yaratilgan buyurtmalarni MoySklad'dagi boshqa botlar/qo'lda
-    kiritilgan buyurtmalardan ajratib turish uchun barcha buyurtmalarga bitta
-    maxsus "Канал продаж" (sales channel) biriktiriladi. Birinchi chaqiruvda
-    shu nomdagi kanal qidiriladi, topilmasa avtomatik yaratiladi (real API'da
-    tekshirilgan — "type": "ECOMMERCE" bilan)."""
-
-    async def loader():
-        data = await ms_request("GET", "/entity/saleschannel", token=token, params={"limit": 100})
-        existing = next(
-            (r for r in data.get("rows", []) if r.get("name") == _POS_SALES_CHANNEL_NAME), None
-        )
-        if existing:
-            return {"meta": existing["meta"]}
-        created = await ms_request(
-            "POST",
-            "/entity/saleschannel",
-            token=token,
-            json={"name": _POS_SALES_CHANNEL_NAME, "type": "ECOMMERCE"},
-        )
-        return {"meta": created["meta"]}
-
-    result = await _cached("pos_sales_channel", token, loader)
-    return result["meta"]
-
-
 def _pick_sale_price(sale_prices: list, default_price_type_id: "str | None") -> "dict | None":
     if not sale_prices:
         return None
@@ -185,74 +150,6 @@ def _pick_sale_price(sale_prices: list, default_price_type_id: "str | None") -> 
     # Standart tur topilmasa (masalan kompaniya uni o'chirib tashlagan bo'lsa),
     # eng yomon holatda ham xato chiqmasligi uchun birinchi narxga qaytamiz.
     return sale_prices[0]
-
-
-_YES_LIKE_NAMES = ("ha", "да", "yes", "true", "тўғри", "to'g'ri")
-
-
-async def _get_required_order_attributes(token: str) -> list:
-    """Ba'zi MoySklad hisoblarida buyurtma (customerorder) uchun qo'shimcha
-    maydonlar (custom attributes) "majburiy" deb belgilangan bo'ladi — bunday
-    hisoblarda ularsiz order yaratib bo'lmaydi (MoySklad butunlay rad etadi).
-    Bu funksiya har doim shu hisobning HAQIQIY majburiy maydonlarini o'zi
-    aniqlab, ularga mantiqiy standart qiymat beradi — hech qanday maydon nomi
-    yoki ID kodda qattiq yozilmagan, shuning uchun boshqa MoySklad hisobida
-    boshqa (yoki hech qanday) majburiy maydon bo'lsa ham avtomatik moslashadi.
-
-    Faqat ikki turdagi maydon uchun ishonchli standart tanlanadi:
-      - "boolean" — True qilib qo'yiladi;
-      - "customentity" (lug'atdan tanlash, masalan "Ha"/"Yo'q") — "Ha"ga
-        o'xshash nomli variant, aks holda yagona/birinchi variant tanlanadi.
-    Boshqa turdagi (matn, sana va h.k.) majburiy maydonlar uchun ishonchli
-    standart yo'q — ular o'tkazib yuboriladi (kerak bo'lsa administrator shu
-    maydonni "majburiy emas" qilishi kerak bo'ladi).
-    """
-
-    async def loader():
-        try:
-            data = await ms_request(
-                "GET", "/entity/customerorder/metadata/attributes", token=token, params={"limit": 1000}
-            )
-        except HTTPException:
-            # Ba'zi MoySklad tariflarida qo'shimcha maydonlar funksiyasi umuman
-            # yo'q — bunday hisoblarda so'rovning o'zi xato qaytaradi (masalan
-            # "Тарифное ограничение"). Bu checkout'ni butunlay to'xtatmasligi
-            # kerak — shunchaki majburiy maydon yo'q deb hisoblanadi.
-            return {"items": []}
-        items = []
-        for attr in data.get("rows", []):
-            if not attr.get("required"):
-                continue
-            attr_meta = attr["meta"]
-
-            if attr.get("type") == "boolean":
-                items.append({"meta": attr_meta, "value": True})
-                continue
-
-            if attr.get("type") == "customentity":
-                custom_entity_href = (attr.get("customEntityMeta") or {}).get("href", "")
-                custom_entity_id = _id_from_href(custom_entity_href) if custom_entity_href else None
-                if not custom_entity_id:
-                    continue
-                try:
-                    dict_data = await ms_request(
-                        "GET", f"/entity/customentity/{custom_entity_id}", token=token, params={"limit": 100}
-                    )
-                except HTTPException:
-                    continue
-                options = dict_data.get("rows", [])
-                if not options:
-                    continue
-                chosen = next(
-                    (o for o in options if o.get("name", "").strip().lower() in _YES_LIKE_NAMES),
-                    options[0],
-                )
-                items.append({"meta": attr_meta, "value": {"meta": chosen["meta"], "name": chosen.get("name")}})
-
-        return {"items": items}
-
-    result = await _cached("required_order_attributes", token, loader)
-    return result["items"]
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +217,7 @@ def _extract_image_url(row: dict) -> "str | None":
     return miniature.get("downloadHref") or tiny.get("href")
 
 
-def _assortment_row_to_item(row: dict, default_price_type_id: "str | None") -> dict:
+def _assortment_row_to_item(row: dict, default_price_type_id: "str | None", store_id: "str | None" = None) -> dict:
     sale_prices = row.get("salePrices") or []
     # ESLATMA (haqiqiy hisobda tekshirilgan): bir tovarda bir nechta narx turi
     # bo'lishi mumkin (masalan "Цена продажи" dollarda, do'kon o'zi qo'shgan
@@ -331,6 +228,17 @@ def _assortment_row_to_item(row: dict, default_price_type_id: "str | None") -> d
     price = (chosen["value"] / 100) if chosen else 0
     price_currency = chosen.get("currency") if chosen else None
     price_currency_id = _id_from_href(price_currency["meta"]["href"]) if price_currency else None
+
+    # Faqat qidiruvga "store_id" berilganda keladi (pastga qarang) — aks
+    # holda MoySklad "stock" maydonini butunlay qaytarmaydi. Bor bo'lsa,
+    # Google Sheets navbatida hali MoySklad'ga sinxronlanmagan buyurtmalar
+    # qoldirgan "deduksiya"ni ham shu yerda ayiramiz — aks holda navbatga
+    # qo'yilgan, lekin hali MoySklad'ga yetib bormagan sotuv oxirgi donani
+    # ikkinchi mijozga ham sotib qo'yishi mumkin edi.
+    stock = row.get("stock")
+    if stock is not None and store_id:
+        stock = max(0.0, stock - stock_cache.get_deduction(store_id, row.get("id")))
+
     return {
         "id": row.get("id"),
         "meta": row.get("meta"),
@@ -341,9 +249,7 @@ def _assortment_row_to_item(row: dict, default_price_type_id: "str | None") -> d
         "price_currency_id": price_currency_id,
         "image_url": _extract_image_url(row),
         "type": (row.get("meta") or {}).get("type"),
-        # Faqat qidiruvga "store_id" berilganda keladi (pastga qarang) — aks
-        # holda MoySklad "stock" maydonini butunlay qaytarmaydi.
-        "stock": row.get("stock"),
+        "stock": stock,
     }
 
 
@@ -384,7 +290,11 @@ async def search_products(
             token=token,
             params={"limit": 50, "expand": "images", **stock_params},
         )
-        return {"items": [_assortment_row_to_item(r, default_price_type_id) for r in data.get("rows", [])]}
+        return {
+            "items": [
+                _assortment_row_to_item(r, default_price_type_id, store_id) for r in data.get("rows", [])
+            ]
+        }
 
     results = await asyncio.gather(
         *[
@@ -403,7 +313,11 @@ async def search_products(
         for row in data.get("rows", []):
             merged[row["id"]] = row
 
-    return {"items": [_assortment_row_to_item(r, default_price_type_id) for r in merged.values()]}
+    return {
+        "items": [
+            _assortment_row_to_item(r, default_price_type_id, store_id) for r in merged.values()
+        ]
+    }
 
 
 @app.get("/api/products/scan")
@@ -427,7 +341,7 @@ async def scan_product(
     if not rows:
         return {"item": None}
     default_price_type_id = await _get_default_price_type_id(token)
-    return {"item": _assortment_row_to_item(rows[0], default_price_type_id)}
+    return {"item": _assortment_row_to_item(rows[0], default_price_type_id, store_id)}
 
 
 @app.get("/api/counterparties")
@@ -572,151 +486,142 @@ async def get_currencies(token: str = Depends(get_current_token)):
 # ---------------------------------------------------------------------------
 
 
+def _order_uses_queue(payload: CheckoutRequest) -> bool:
+    """Navbatga qo'yish FAQAT bitta MoySklad tashkiloti (EXPECTED_MS_ORGANIZATION_ID)
+    uchun sozlangan — boshqa har qanday login (yoki hali CHECKOUT_MODE=queue
+    qilib yoqilmagan bo'lsa) hozirgidek to'g'ridan-to'g'ri MoySklad'ga yozadi."""
+    if CHECKOUT_MODE != "queue" or not EXPECTED_MS_ORGANIZATION_ID:
+        return False
+    org_id = _id_from_href((payload.organization_meta or {}).get("href", ""))
+    return org_id == EXPECTED_MS_ORGANIZATION_ID
+
+
+def _items_summary(items) -> str:
+    return "; ".join(f"{item.name or item.id or 'Tovar'} x{item.quantity:g}" for item in items)
+
+
+def _items_total(items) -> float:
+    return sum(item.price * item.quantity for item in items)
+
+
+def _stock_cache_items(items) -> list[tuple[str, float]]:
+    return [
+        (item.id or _id_from_href(item.assortment_meta.get("href", "")), item.quantity) for item in items
+    ]
+
+
 @app.post("/api/checkout")
-async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_token)):
+async def checkout(payload: CheckoutRequest, session: dict = Depends(get_current_session)):
     if not payload.items:
         raise HTTPException(status_code=400, detail="Savat bo'sh")
 
-    # MUHIM (real API'da to'g'ridan-to'g'ri tekshirilgan): "positions[].price"
-    # hujjatning O'Z rate.currency birligida ishlatiladi — MoySklad uni bazaviy
-    # valyutaga hech qanday avtomatik konvertatsiya qilmaydi. Shu sabab frontend
-    # narxni to'g'ridan-to'g'ri kassir tanlagan valyutada yuboradi, bu yerda
-    # hech qanday qo'shimcha konvertatsiya qilinmaydi.
-    positions = [
-        {
-            "quantity": item.quantity,
-            "price": _to_minor_units(item.price),
-            "assortment": {"meta": item.assortment_meta},
-        }
-        for item in payload.items
-    ]
+    if not _order_uses_queue(payload):
+        result = await execute_checkout_chain(payload, session["token"])
+        return {"mode": "direct", **result}
 
-    # Kassir chet el valyutasini tanlagan bo'lsa, shu bitta "rate" BARCHA UCH
-    # hujjatga (buyurtma, otgruzka, to'lov) baravar qo'llaniladi — aks holda
-    # ular turli valyutada chiqib, chalkashlik yuzaga kelardi (haqiqiy
-    # foydalanishda aynan shu xato tasdiqlangan edi). MUHIM: MoySklad
-    # tashkilotning bazaviy (учетная) valyutasi uchun rate.value != 1
-    # yuborilsa xato 3007 bilan rad etadi — kurs faqat CHET EL valyutasidagi
-    # hisoblarda qo'llaniladi.
-    document_rate = None
-    if payload.exchange_rate and payload.exchange_rate > 0 and payload.currency_meta:
-        selected_currency_id = _id_from_href(payload.currency_meta.get("href", ""))
-        default_currency_id = await _get_default_currency_id(token)
-        if selected_currency_id != default_currency_id:
-            # MUHIM (MoySklad interfeysida vizual tasdiqlangan): API'ning
-            # "rate.value" maydoni kassir kiritgan "1 bazaviy = X hujjat valyutasi"
-            # (masalan "1 dollar = 12000 so'm") yo'nalishining TESKARISIDA
-            # saqlanadi. MoySklad o'z interfeysida "1 USD = 12 000 UZS" to'g'ri
-            # ko'rsatishi uchun bu yerga 1/12000 yuborilishi kerak — kassir
-            # kiritgan raqamning o'zi emas.
-            document_rate = {
-                "value": 1 / payload.exchange_rate,
-                "currency": {"meta": payload.currency_meta},
-            }
+    order_id = str(uuid4())
+    store_id = _id_from_href((payload.store_meta or {}).get("href", ""))
 
-    # 1) Заказ покупателя (customerorder) — POS-sotuvning boshlang'ich hujjati.
-    # Otgruzka va to'lov ikkalasi ham shunga bog'lanadi (pastga qarang).
-    order_body = {
-        "organization": {"meta": payload.organization_meta},
-        "agent": {"meta": payload.agent_meta},
-        "store": {"meta": payload.store_meta},
-        "positions": positions,
-        "applicable": True,
-        # Shu ilova orqali yaratilgan buyurtmalarni boshqa botlar/qo'lda
-        # kiritilganlardan ajratish uchun — "Tarix" bo'limi shu kanal bo'yicha
-        # filtrlaydi (real API'da tekshirilgan).
-        "salesChannel": {"meta": await _get_pos_sales_channel_meta(token)},
-    }
-    if document_rate:
-        order_body["rate"] = document_rate
-    if payload.comment:
-        order_body["description"] = payload.comment
-
-    # Ba'zi hisoblarda buyurtma uchun majburiy qo'shimcha maydonlar (custom
-    # attributes) sozlangan bo'ladi — ularsiz MoySklad order yaratishni rad
-    # etadi. Bu yerda ular avtomatik topilib, mantiqiy standart qiymat bilan
-    # to'ldiriladi (real hisobda tekshirilgan).
-    required_attrs = await _get_required_order_attributes(token)
-    if required_attrs:
-        order_body["attributes"] = required_attrs
-    if payload.project_meta:
-        order_body["project"] = {"meta": payload.project_meta}
-    order = await ms_request("POST", "/entity/customerorder", token=token, json=order_body)
-    order_sum = order.get("sum", 0)
-
-    # 2) Otgruzka (demand) — buyurtmadan yaratiladi, "customerOrder" maydoni orqali
-    # unga bog'lanadi (real API'dagi mavjud hujjatlarda tekshirilgan maydon nomi).
-    demand_body = {
-        "organization": {"meta": payload.organization_meta},
-        "agent": {"meta": payload.agent_meta},
-        "store": {"meta": payload.store_meta},
-        "positions": positions,
-        "applicable": True,
-        "customerOrder": {"meta": order["meta"]},
-    }
-    if document_rate:
-        demand_body["rate"] = document_rate
-    if payload.comment:
-        demand_body["description"] = payload.comment
-    if payload.project_meta:
-        demand_body["project"] = {"meta": payload.project_meta}
-    try:
-        demand = await ms_request("POST", "/entity/demand", token=token, json=demand_body)
-    except HTTPException:
-        # Otgruzka yaratilmasa, endi hech narsaga bog'lanmagan buyurtma qolib ketmasin.
-        await ms_request("DELETE", f"/entity/customerorder/{order['id']}", token=token)
-        raise
-
-    # 3) To'lov hujjati — QARZGA sotuvda umuman yaratilmaydi (faqat buyurtma +
-    # otgruzka qoladi, mijoz qarzi MoySklad'da to'lanmagan buyurtma sifatida ko'rinadi).
-    if payload.is_debt:
-        return {
-            "order": {"id": order["id"], "name": order.get("name")},
-            "demand": {"id": demand["id"], "name": demand.get("name")},
-            "payment": None,
-        }
-
-    # Kassir tanlagan hujjat turiga qarab naqd (cashin) yoki bank (paymentin).
-    # Foydalanuvchi tanloviga ko'ra BUYURTMAning o'ziga bog'lanadi
-    # ("operations[].linkedSum"), otgruzkaga emas.
-    # ESLATMA (real API'da tekshirilgan): "paymentin" hisob bog'lanishini
-    # ("organizationAccount") to'liq saqlaydi, lekin "cashin" (ПКО) MoySklad'da
-    # muayyan hisobga umuman bog'lanmaydi — u faqat tashkilotning umumiy kassa
-    # balansini oshiradi, shuning uchun organizationAccount maydoni cashin uchun
-    # jo'natilsa ham e'tiborga olinmaydi (xato bermaydi, shunchaki saqlanmaydi).
-    payment_body = {
-        "organization": {"meta": payload.organization_meta},
-        "agent": {"meta": payload.agent_meta},
-        "applicable": True,
-        "sum": order_sum,
-        "organizationAccount": {"meta": payload.account_meta},
-        "operations": [{"meta": order["meta"], "linkedSum": order_sum}],
-    }
-    if document_rate:
-        payment_body["rate"] = document_rate
-
-    # Kartada oldindan to'langan holatlar uchun — to'lov sanasi/vaqti sotuv
-    # vaqtidan farq qilishi mumkin, kassir buni qo'lda ko'rsata oladi
-    # (real API'da tekshirilgan: "moment": "YYYY-MM-DD HH:MM:SS" formatida qabul qilinadi).
-    if payload.payment_moment:
-        payment_body["moment"] = payload.payment_moment
-
-    payment_endpoint = "/entity/cashin" if payload.document_type == "cashin" else "/entity/paymentin"
-    try:
-        payment = await ms_request("POST", payment_endpoint, token=token, json=payment_body)
-    except HTTPException:
-        # To'lov yaratilmasa, endi bog'lanmagan otgruzka va buyurtma tizimda
-        # "osilib qolmasligi" kerak — aks holda kassir xato ko'radi-yu, lekin
-        # omborda tasdiqlangan otgruzka/buyurtma qolib ketadi.
-        await ms_request("DELETE", f"/entity/demand/{demand['id']}", token=token)
-        await ms_request("DELETE", f"/entity/customerorder/{order['id']}", token=token)
-        raise
+    await sheets_client.append_pending_order(
+        order_id=order_id,
+        cashier_name=session["employee_name"],
+        store_id=store_id,
+        store_name=payload.store_name,
+        agent_name=payload.agent_name,
+        items_summary=_items_summary(payload.items),
+        total_sum=_items_total(payload.items),
+        currency_name=payload.currency_name,
+        is_debt=payload.is_debt,
+        payload_json=payload.model_dump_json(),
+    )
+    stock_cache.apply_order(order_id, store_id, _stock_cache_items(payload.items))
 
     return {
-        "order": {"id": order["id"], "name": order.get("name")},
-        "demand": {"id": demand["id"], "name": demand.get("name")},
-        "payment": {"id": payment["id"], "name": payment.get("name")},
+        "mode": "queue",
+        "order_id": order_id,
+        "status": sheets_client.STATUS_PENDING,
+        "queued_at": sheets_client.now_iso(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Navbatdagi (hali sinxronlanmagan) buyurtmalarni tahrirlash/bekor qilish
+# ---------------------------------------------------------------------------
+
+
+@app.patch("/api/orders/pending/{order_id}")
+async def edit_pending_order(order_id: str, payload: PendingOrderItemsEdit, session: dict = Depends(get_current_session)):
+    row = await sheets_client.get_row(order_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Buyurtma topilmadi")
+    if row["status"] not in sheets_client.EDITABLE_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail="Bu buyurtma allaqachon sinxronlashga yuborilgan yoki sinxronlangan — tahrirlab bo'lmaydi",
+        )
+
+    try:
+        payload_dict = json.loads(row["payload_json"])
+    except ValueError:
+        raise HTTPException(status_code=500, detail="Buyurtma ma'lumotini o'qib bo'lmadi")
+    payload_dict["items"] = [item.model_dump() for item in payload.items]
+    new_payload = CheckoutRequest.model_validate(payload_dict)
+
+    # Avval Sheets'ga yozamiz (ishonchli manba) — faqat u muvaffaqiyatli
+    # bo'lsa xotiradagi qoldiq keshini yangilaymiz, aks holda ular
+    # bir-biridan uzilib qolishi mumkin edi.
+    ok = await sheets_client.compare_and_set_status(
+        order_id,
+        sheets_client.EDITABLE_STATUSES,
+        row["status"],
+        edited_at=sheets_client.now_iso(),
+        items_summary=_items_summary(new_payload.items),
+        total_sum=f"{_items_total(new_payload.items):.2f}",
+        payload_json=new_payload.model_dump_json(),
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=409, detail="Buyurtma shu payt sinxronlashga yuborildi — tahrirlab bo'lmadi"
+        )
+
+    stock_cache.release_order(order_id)
+    stock_cache.apply_order(order_id, row.get("store_id") or None, _stock_cache_items(new_payload.items))
+
+    return {"order_id": order_id, "status": row["status"]}
+
+
+@app.delete("/api/orders/pending/{order_id}")
+async def delete_pending_order(order_id: str, session: dict = Depends(get_current_session)):
+    row = await sheets_client.get_row(order_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Buyurtma topilmadi")
+    if row["status"] not in sheets_client.EDITABLE_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail="Bu buyurtma allaqachon sinxronlashga yuborilgan yoki sinxronlangan — o'chirib bo'lmaydi",
+        )
+
+    ok = await sheets_client.compare_and_set_status(
+        order_id, sheets_client.EDITABLE_STATUSES, sheets_client.STATUS_CANCELLED, edited_at=sheets_client.now_iso()
+    )
+    if not ok:
+        raise HTTPException(
+            status_code=409, detail="Buyurtma shu payt sinxronlashga yuborildi — o'chirib bo'lmadi"
+        )
+
+    stock_cache.release_order(order_id)
+    return {"order_id": order_id, "status": sheets_client.STATUS_CANCELLED}
+
+
+# ---------------------------------------------------------------------------
+# Google Apps Script trigger shu yerni chaqiradi (00:00/06:00/12:00/18:00,
+# Asia/Tashkent) — navbatdagi buyurtmalarni MoySklad'ga ko'chiradi.
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/sync/run")
+async def sync_run(_: None = Depends(require_sync_secret)):
+    return await sync_job.run_sync()
 
 
 # ---------------------------------------------------------------------------
@@ -724,12 +629,20 @@ async def checkout(payload: CheckoutRequest, token: str = Depends(get_current_to
 # ---------------------------------------------------------------------------
 
 
+def _history_sort_key(moment: "str | None") -> str:
+    # MoySklad "YYYY-MM-DD HH:MM:SS" beradi, Sheets'dagi vaqtlarimiz esa ISO8601
+    # "YYYY-MM-DDTHH:MM:SSZ" — ikkalasi ham to'g'ri leksikografik tartiblansin
+    # uchun ajratuvchini bir xillashtiramiz.
+    return (moment or "").replace(" ", "T")
+
+
 @app.get("/api/orders/history")
 async def get_orders_history(token: str = Depends(get_current_token)):
-    """Shu mini ilova orqali yaratilgan buyurtmalar tarixini qaytaradi.
-    MoySklad'dagi boshqa botlar yoki qo'lda kiritilgan buyurtmalar bu ro'yxatga
-    tushmaydi — checkout paytida har bir buyurtmaga biriktiriladigan maxsus
-    "POS Mini App" sotuv kanali (salesChannel) bo'yicha filtrlanadi."""
+    """Shu mini ilova orqali yaratilgan buyurtmalar tarixini qaytaradi:
+    MoySklad'ga allaqachon sinxronlangan buyurtmalar (maxsus "POS Mini App"
+    sotuv kanali bo'yicha filtrlangan) + "queue" rejimida hali navbatda
+    turgan (kutilmoqda/xato) buyurtmalar, bitta vaqt bo'yicha tartiblangan
+    ro'yxat sifatida."""
 
     channel_meta = await _get_pos_sales_channel_meta(token)
     channel_href = channel_meta["href"]
@@ -764,9 +677,36 @@ async def get_orders_history(token: str = Depends(get_current_token)):
                 "is_paid": total_sum > 0 and payed_sum >= total_sum,
                 "currency_id": _id_from_href(currency_href) if currency_href else None,
                 "comment": row.get("description"),
+                "status": sheets_client.STATUS_SYNCED,
             }
         )
 
+    if CHECKOUT_MODE == "queue" and EXPECTED_MS_ORGANIZATION_ID:
+        pending_rows = await sheets_client.get_visible_pending_rows()
+        for r in pending_rows:
+            try:
+                r_payload = json.loads(r["payload_json"] or "{}")
+            except ValueError:
+                r_payload = {}
+            items.append(
+                {
+                    "id": r["order_id"],
+                    "name": None,
+                    "moment": r.get("created_at"),
+                    "agent_name": r.get("agent_name") or r_payload.get("agent_name"),
+                    "sum": float(r.get("total_sum") or 0),
+                    "is_paid": False,
+                    "currency_id": None,
+                    "currency_name": r.get("currency_name") or None,
+                    "comment": r_payload.get("comment"),
+                    "status": r["status"],
+                    "last_error": r.get("last_error") or None,
+                    "items_summary": r.get("items_summary"),
+                    "items": r_payload.get("items", []),
+                }
+            )
+
+    items.sort(key=lambda it: _history_sort_key(it.get("moment")), reverse=True)
     return {"items": items}
 
 
