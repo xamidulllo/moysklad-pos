@@ -9,4 +9,7 @@ def _to_minor_units(sum_in_som: float) -> int:
 
 
 def _id_from_href(href: str) -> str:
+    # Ba'zi javoblarda (masalan "report/stock/bystore") href'ga "?expand=..."
+    # kabi so'rov parametri qo'shilgan bo'ladi — ID qismidan oldin kesib tashlanadi.
+    href = href.split("?", 1)[0]
     return href.rstrip("/").rsplit("/", 1)[-1]

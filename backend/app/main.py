@@ -217,7 +217,12 @@ def _extract_image_url(row: dict) -> "str | None":
     return miniature.get("downloadHref") or tiny.get("href")
 
 
-def _assortment_row_to_item(row: dict, default_price_type_id: "str | None", store_id: "str | None" = None) -> dict:
+def _assortment_row_to_item(
+    row: dict,
+    default_price_type_id: "str | None",
+    store_id: "str | None" = None,
+    stock_by_store: "dict[str, float] | None" = None,
+) -> dict:
     sale_prices = row.get("salePrices") or []
     # ESLATMA (haqiqiy hisobda tekshirilgan): bir tovarda bir nechta narx turi
     # bo'lishi mumkin (masalan "Цена продажи" dollarda, do'kon o'zi qo'shgan
@@ -229,14 +234,16 @@ def _assortment_row_to_item(row: dict, default_price_type_id: "str | None", stor
     price_currency = chosen.get("currency") if chosen else None
     price_currency_id = _id_from_href(price_currency["meta"]["href"]) if price_currency else None
 
-    # Faqat qidiruvga "store_id" berilganda keladi (pastga qarang) — aks
-    # holda MoySklad "stock" maydonini butunlay qaytarmaydi. Bor bo'lsa,
+    # Faqat "store_id" (va shu ombor uchun oldindan yuklangan "stock_by_store"
+    # xaritasi) berilganda hisoblanadi. Xaritada yo'q tovar — shu omborda
+    # 0 dona (report o'zi ham nol qoldiqli tovarlarni chiqarmaydi). Bor bo'lsa,
     # Google Sheets navbatida hali MoySklad'ga sinxronlanmagan buyurtmalar
     # qoldirgan "deduksiya"ni ham shu yerda ayiramiz — aks holda navbatga
     # qo'yilgan, lekin hali MoySklad'ga yetib bormagan sotuv oxirgi donani
     # ikkinchi mijozga ham sotib qo'yishi mumkin edi.
-    stock = row.get("stock")
-    if stock is not None and store_id:
+    stock = None
+    if store_id and stock_by_store is not None:
+        stock = stock_by_store.get(row.get("id"), 0.0)
         stock = max(0.0, stock - stock_cache.get_deduction(store_id, row.get("id")))
 
     return {
@@ -253,15 +260,46 @@ def _assortment_row_to_item(row: dict, default_price_type_id: "str | None", stor
     }
 
 
-def _stock_params(store_id: "str | None") -> dict:
-    """"store_id" berilganda MoySklad javobiga o'sha ombordagi ANIQ qoldiq
-    ("stock") maydonini qo'shib beradi (real API'da tekshirilgan:
-    "entity/assortment"ga "stockStore=<ombor href>" berilsa, har bir tovar
-    aynan shu ombor bo'yicha qoldig'i bilan qaytadi — umumiy/boshqa
-    omborlardagi qoldiq bilan aralashib ketmaydi)."""
-    if not store_id:
-        return {}
-    return {"stockStore": f"{MOYSKLAD_BASE_URL}/entity/store/{store_id}"}
+async def _get_stock_by_store(token: str, store_id: str) -> "dict[str, float]":
+    """Tanlangan ombordagi HAR BIR tovarning aniq qoldig'ini {tovar_id: qoldiq}
+    xaritasi sifatida qaytaradi.
+
+    MUHIM (real hisobda tekshirilgan): "entity/assortment"ga "stockStore=<ombor
+    href>" berish — avvalgi taxmin bo'yicha shu ombor bo'yicha aniq qoldiq
+    qaytarishi kerak edi, LEKIN ba'zi tovarlar uchun (masalan bir nechta
+    ombor/partiya harakati bo'lgan tovarlarda) buni SOQIB, barcha omborlar
+    bo'yicha UMUMIY qoldiqni qaytarib yuborishi aniqlandi — bu kassirni real
+    zaxiradan ko'ra ko'proq tovar sotib yuborishga olib kelishi mumkin edi.
+    Shu sabab endi alohida, maxsus "report/stock/bystore" hisoboti
+    ishlatiladi — bu hisobot shu ombordagi HAR BIR tovarni to'g'ri qoldig'i
+    bilan birma-bir qaytaradi (real hisobda solishtirib tekshirilgan).
+    """
+
+    async def loader():
+        store_href = f"{MOYSKLAD_BASE_URL}/entity/store/{store_id}"
+        stock_map: dict[str, float] = {}
+        offset = 0
+        while True:
+            data = await ms_request(
+                "GET",
+                "/report/stock/bystore",
+                token=token,
+                params={"filter": f"store={store_href}", "limit": 1000, "offset": offset},
+            )
+            rows = data.get("rows", [])
+            for row in rows:
+                product_id = _id_from_href((row.get("meta") or {}).get("href", ""))
+                if not product_id:
+                    continue
+                entries = row.get("stockByStore") or []
+                stock_map[product_id] = sum(e.get("stock") or 0 for e in entries)
+            if len(rows) < 1000:
+                break
+            offset += 1000
+        return {"map": stock_map}
+
+    result = await _cached(f"stock_by_store:{store_id}", token, loader)
+    return result["map"]
 
 
 @app.get("/api/products")
@@ -281,18 +319,19 @@ async def search_products(
     birlashtiriladi (OR semantikasini qo'lda hosil qilish).
     """
     default_price_type_id = await _get_default_price_type_id(token)
-    stock_params = _stock_params(store_id)
+    stock_by_store = await _get_stock_by_store(token, store_id) if store_id else None
 
     if not q:
         data = await ms_request(
             "GET",
             "/entity/assortment",
             token=token,
-            params={"limit": 50, "expand": "images", **stock_params},
+            params={"limit": 50, "expand": "images"},
         )
         return {
             "items": [
-                _assortment_row_to_item(r, default_price_type_id, store_id) for r in data.get("rows", [])
+                _assortment_row_to_item(r, default_price_type_id, store_id, stock_by_store)
+                for r in data.get("rows", [])
             ]
         }
 
@@ -302,7 +341,7 @@ async def search_products(
                 "GET",
                 "/entity/assortment",
                 token=token,
-                params={"filter": f"{field}~{q}", "limit": 50, "expand": "images", **stock_params},
+                params={"filter": f"{field}~{q}", "limit": 50, "expand": "images"},
             )
             for field in ("name", "code", "article")
         ]
@@ -315,7 +354,8 @@ async def search_products(
 
     return {
         "items": [
-            _assortment_row_to_item(r, default_price_type_id, store_id) for r in merged.values()
+            _assortment_row_to_item(r, default_price_type_id, store_id, stock_by_store)
+            for r in merged.values()
         ]
     }
 
@@ -335,13 +375,14 @@ async def scan_product(
         "GET",
         "/entity/assortment",
         token=token,
-        params={"filter": f"barcode={code}", "limit": 1, "expand": "images", **_stock_params(store_id)},
+        params={"filter": f"barcode={code}", "limit": 1, "expand": "images"},
     )
     rows = data.get("rows", [])
     if not rows:
         return {"item": None}
     default_price_type_id = await _get_default_price_type_id(token)
-    return {"item": _assortment_row_to_item(rows[0], default_price_type_id, store_id)}
+    stock_by_store = await _get_stock_by_store(token, store_id) if store_id else None
+    return {"item": _assortment_row_to_item(rows[0], default_price_type_id, store_id, stock_by_store)}
 
 
 @app.get("/api/counterparties")
