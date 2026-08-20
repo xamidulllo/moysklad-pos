@@ -11,7 +11,9 @@ import time
 from typing import Awaitable, Callable
 
 _cache: dict[str, tuple[float, dict]] = {}
-CACHE_TTL_SECONDS = 60
+# Hisoblar/tashkilotlar/valyutalar/majburiy atributlar kabi ma'lumotlar juda
+# kamdan-kam o'zgaradi — shuning uchun 1 soatga keshlanadi (avval 60s edi).
+CACHE_TTL_SECONDS = 3600
 
 
 async def _cached(key: str, token: str, loader: Callable[[], Awaitable[dict]]) -> dict:

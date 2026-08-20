@@ -39,7 +39,7 @@ from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import sheets_client, stock_cache, sync_job
+from . import catalog_cache, sheets_client, stock_cache, sync_job
 from .auth import create_session, delete_session, get_current_session, get_current_token, require_sync_secret
 from .bot import start_bot, stop_bot
 from .cache import _cached
@@ -142,6 +142,20 @@ async def _get_default_price_type_id(token: str) -> "str | None":
 
     result = await _cached("default_price_type", token, loader)
     return result["id"]
+
+
+async def _get_account_id(token: str) -> str:
+    """Katalog/mijozlar keshi (catalog_cache.py) MoySklad HISOBI (accountId)
+    bo'yicha ajratilgan — bu ilova istalgan MoySklad login bilan kirishga
+    ruxsat bergani uchun (multi-tenant), turli hisoblarning kassirlari
+    bir-birining tovar/mijoz ro'yxatini ko'rib qolmasligi kerak."""
+
+    async def loader():
+        employee = await ms_request("GET", "/context/employee", token=token)
+        return {"account_id": employee.get("accountId")}
+
+    result = await _cached("account_id", token, loader)
+    return result["account_id"]
 
 
 def _pick_sale_price(sale_prices: list, default_price_type_id: "str | None") -> "dict | None":
@@ -321,53 +335,23 @@ async def search_products(
 ):
     """Mahsulotlarni nomi, kodi yoki artikuli bo'yicha qidiradi.
 
-    ESLATMA (real API'da tekshirilgan): "entity/assortment" endpoint'i "search"
-    parametrini JIM RAVISHDA e'tiborga olmaydi (har doim to'liq ro'yxatni
-    qaytaradi) — MoySklad'ning boshqa ko'p entity'laridan farqli xatti-harakat.
-    Shu sabab bu yerda "filter=maydon~qiymat" sintaksisi ishlatiladi; turli
-    maydonlar bo'yicha filter'lar MoySklad'da AND birlashtiriladi (OR emas),
-    shuning uchun har bir maydon uchun alohida so'rov yuborilib, natijalar
-    birlashtiriladi (OR semantikasini qo'lda hosil qilish).
+    MUHIM: MoySklad'ga har safar to'g'ridan-to'g'ri so'rov yubormaydi — butun
+    tovar katalogi xotirada saqlanadi (catalog_cache.py, 1 soatga, MoySklad
+    hisobi bo'yicha ajratilgan) va qidiruv shu xotiradagi ro'yxat ustida
+    amalga oshiriladi. Bu qidiruvni deyarli oniy qiladi — avval har bir
+    qidiruv so'rovi ("name~q"/"code~q"/"article~q" uchun 3 ta alohida MoySklad
+    so'rovi) sezilarli sekinlikning asosiy sababi edi.
     """
-    # Uchalasi ham (narx turi, ombor qoldig'i, o'zi qidiruv so'rovlari) bir-biriga
-    # bog'liq emas — ketma-ket kutish o'rniga parallel yuborilsa, umumiy javob
-    # vaqti eng SEKIN so'rovga teng bo'ladi, hammasining yig'indisiga emas.
-    if not q:
-        default_price_type_id, stock_by_store, data = await asyncio.gather(
-            _get_default_price_type_id(token),
-            _get_stock_by_store(token, store_id) if store_id else _no_stock(),
-            ms_request("GET", "/entity/assortment", token=token, params={"limit": 50, "expand": "images"}),
-        )
-        return {
-            "items": [
-                _assortment_row_to_item(r, default_price_type_id, store_id, stock_by_store)
-                for r in data.get("rows", [])
-            ]
-        }
-
-    default_price_type_id, stock_by_store, *results = await asyncio.gather(
+    account_id, default_price_type_id, stock_by_store = await asyncio.gather(
+        _get_account_id(token),
         _get_default_price_type_id(token),
         _get_stock_by_store(token, store_id) if store_id else _no_stock(),
-        *[
-            ms_request(
-                "GET",
-                "/entity/assortment",
-                token=token,
-                params={"filter": f"{field}~{q}", "limit": 50, "expand": "images"},
-            )
-            for field in ("name", "code", "article")
-        ],
     )
-
-    merged: dict[str, dict] = {}
-    for data in results:
-        for row in data.get("rows", []):
-            merged[row["id"]] = row
-
+    await catalog_cache.ensure_fresh(account_id, token)
+    rows = catalog_cache.search_assortment(account_id, q)[:50]
     return {
         "items": [
-            _assortment_row_to_item(r, default_price_type_id, store_id, stock_by_store)
-            for r in merged.values()
+            _assortment_row_to_item(r, default_price_type_id, store_id, stock_by_store) for r in rows
         ]
     }
 
@@ -378,38 +362,30 @@ async def scan_product(
     store_id: str | None = Query(None),
     token: str = Depends(get_current_token),
 ):
-    """Kamera bilan o'qilgan barkod bo'yicha ANIQ moslikni qidiradi.
-
-    Real API'da tekshirilgan: "filter=barcode=<qiymat>" barkodlar massivi
-    ("barcodes": [{"ean13": "..."}]) ichidan aniq moslikni topadi.
-    """
-    data, default_price_type_id, stock_by_store = await asyncio.gather(
-        ms_request(
-            "GET",
-            "/entity/assortment",
-            token=token,
-            params={"filter": f"barcode={code}", "limit": 1, "expand": "images"},
-        ),
+    """Kamera bilan o'qilgan barkod bo'yicha ANIQ moslikni qidiradi — xotiradagi
+    keshlangan katalogdan (search_products'dagi kabi sabab)."""
+    account_id, default_price_type_id, stock_by_store = await asyncio.gather(
+        _get_account_id(token),
         _get_default_price_type_id(token),
         _get_stock_by_store(token, store_id) if store_id else _no_stock(),
     )
-    rows = data.get("rows", [])
-    if not rows:
+    await catalog_cache.ensure_fresh(account_id, token)
+    row = catalog_cache.find_by_barcode(account_id, code)
+    if row is None:
         return {"item": None}
-    return {"item": _assortment_row_to_item(rows[0], default_price_type_id, store_id, stock_by_store)}
+    return {"item": _assortment_row_to_item(row, default_price_type_id, store_id, stock_by_store)}
 
 
 @app.get("/api/counterparties")
 async def search_counterparties(q: str = Query("", alias="q"), token: str = Depends(get_current_token)):
-    params = {"limit": 20}
-    if q:
-        params["search"] = q
-    data = await ms_request("GET", "/entity/counterparty", token=token, params=params)
+    """Mijozlarni qidiradi — xotiradagi keshlangan ro'yxatdan (catalog_cache.py),
+    tovar qidiruvidagi bilan bir xil sababga ko'ra (MoySklad'ga har safar
+    to'g'ridan-to'g'ri urilish o'rniga)."""
+    account_id = await _get_account_id(token)
+    await catalog_cache.ensure_fresh(account_id, token)
+    rows = catalog_cache.search_counterparties(account_id, q)[:20]
     return {
-        "items": [
-            {"id": row["id"], "meta": row["meta"], "name": row["name"]}
-            for row in data.get("rows", [])
-        ]
+        "items": [{"id": row["id"], "meta": row["meta"], "name": row["name"]} for row in rows]
     }
 
 
@@ -420,6 +396,10 @@ async def create_counterparty(payload: CounterpartyCreate, token: str = Depends(
     if payload.phone:
         body["phone"] = payload.phone
     row = await ms_request("POST", "/entity/counterparty", token=token, json=body)
+    # Darhol keshga ham qo'shamiz — aks holda shu mijozni (hatto o'zi yaratgan
+    # kassir ham) keyingi soat davomida qidirib topa olmas edi.
+    account_id = await _get_account_id(token)
+    catalog_cache.add_counterparty(account_id, row)
     return {"id": row["id"], "meta": row["meta"], "name": row["name"]}
 
 
