@@ -48,10 +48,13 @@ from .config import (
     EXPECTED_MS_ORGANIZATION_ID,
     GOOGLE_SHEETS_SPREADSHEET_ID,
     MOYSKLAD_BASE_URL,
+    MS_SYNC_LOGIN,
+    MS_SYNC_PASSWORD,
     SESSION_COOKIE_NAME,
     SESSION_COOKIE_SECURE,
     SESSION_TTL_HOURS,
 )
+from .moysklad_client import close_client as close_ms_client
 from .moysklad_client import exchange_credentials_for_token, ms_request
 from .schemas import CheckoutRequest, CounterpartyCreate, LoginRequest, PendingOrderItemsEdit
 from .utils import _id_from_href
@@ -82,6 +85,7 @@ async def lifespan(app: FastAPI):
     await start_bot()
     yield
     await stop_bot()
+    await close_ms_client()
 
 
 app = FastAPI(title="MoySklad Mobile POS", lifespan=lifespan)
@@ -260,6 +264,12 @@ def _assortment_row_to_item(
     }
 
 
+async def _no_stock() -> None:
+    """`asyncio.gather` bir xil shakldagi natijalar kutgani uchun — ombor
+    tanlanmagan holatda "qoldiq xaritasi o'rniga" ishlatiladigan bo'sh qiymat."""
+    return None
+
+
 async def _get_stock_by_store(token: str, store_id: str) -> "dict[str, float]":
     """Tanlangan ombordagi HAR BIR tovarning aniq qoldig'ini {tovar_id: qoldiq}
     xaritasi sifatida qaytaradi.
@@ -318,15 +328,14 @@ async def search_products(
     shuning uchun har bir maydon uchun alohida so'rov yuborilib, natijalar
     birlashtiriladi (OR semantikasini qo'lda hosil qilish).
     """
-    default_price_type_id = await _get_default_price_type_id(token)
-    stock_by_store = await _get_stock_by_store(token, store_id) if store_id else None
-
+    # Uchalasi ham (narx turi, ombor qoldig'i, o'zi qidiruv so'rovlari) bir-biriga
+    # bog'liq emas — ketma-ket kutish o'rniga parallel yuborilsa, umumiy javob
+    # vaqti eng SEKIN so'rovga teng bo'ladi, hammasining yig'indisiga emas.
     if not q:
-        data = await ms_request(
-            "GET",
-            "/entity/assortment",
-            token=token,
-            params={"limit": 50, "expand": "images"},
+        default_price_type_id, stock_by_store, data = await asyncio.gather(
+            _get_default_price_type_id(token),
+            _get_stock_by_store(token, store_id) if store_id else _no_stock(),
+            ms_request("GET", "/entity/assortment", token=token, params={"limit": 50, "expand": "images"}),
         )
         return {
             "items": [
@@ -335,7 +344,9 @@ async def search_products(
             ]
         }
 
-    results = await asyncio.gather(
+    default_price_type_id, stock_by_store, *results = await asyncio.gather(
+        _get_default_price_type_id(token),
+        _get_stock_by_store(token, store_id) if store_id else _no_stock(),
         *[
             ms_request(
                 "GET",
@@ -344,7 +355,7 @@ async def search_products(
                 params={"filter": f"{field}~{q}", "limit": 50, "expand": "images"},
             )
             for field in ("name", "code", "article")
-        ]
+        ],
     )
 
     merged: dict[str, dict] = {}
@@ -371,17 +382,19 @@ async def scan_product(
     Real API'da tekshirilgan: "filter=barcode=<qiymat>" barkodlar massivi
     ("barcodes": [{"ean13": "..."}]) ichidan aniq moslikni topadi.
     """
-    data = await ms_request(
-        "GET",
-        "/entity/assortment",
-        token=token,
-        params={"filter": f"barcode={code}", "limit": 1, "expand": "images"},
+    data, default_price_type_id, stock_by_store = await asyncio.gather(
+        ms_request(
+            "GET",
+            "/entity/assortment",
+            token=token,
+            params={"filter": f"barcode={code}", "limit": 1, "expand": "images"},
+        ),
+        _get_default_price_type_id(token),
+        _get_stock_by_store(token, store_id) if store_id else _no_stock(),
     )
     rows = data.get("rows", [])
     if not rows:
         return {"item": None}
-    default_price_type_id = await _get_default_price_type_id(token)
-    stock_by_store = await _get_stock_by_store(token, store_id) if store_id else None
     return {"item": _assortment_row_to_item(rows[0], default_price_type_id, store_id, stock_by_store)}
 
 
@@ -685,13 +698,29 @@ async def get_orders_history(token: str = Depends(get_current_token)):
     turgan (kutilmoqda/xato) buyurtmalar, bitta vaqt bo'yicha tartiblangan
     ro'yxat sifatida."""
 
-    channel_meta = await _get_pos_sales_channel_meta(token)
+    history_token = token
+    if MS_SYNC_LOGIN and MS_SYNC_PASSWORD:
+        # "queue" rejimida BARCHA sinxronlangan hujjatlar umumiy sync hisobi
+        # (MS_SYNC_LOGIN) nomidan yaratiladi — agar KO'RUVCHI kassirning o'z
+        # MoySklad huquqi "faqat o'zi yaratgan hujjatlarni ko'rish" bilan
+        # cheklangan bo'lsa, o'z tokeni bilan so'ralganda bu hujjatlarning
+        # HECH birini ko'rmaydi (garchi aslida aynan o'zi kiritgan bo'lsa
+        # ham — chunki MoySklad'ning nazarida ularni sync hisobi yaratgan).
+        # Shu sabab Tarix har doim shu umumiy hisob nomidan so'raladi — "Tarix
+        # barcha kassirlarga umumiy" tamoyiliga mos, MoySklad'dagi huquq
+        # cheklovlaridan qat'i nazar (real hisobda shunday muammo tasdiqlangan).
+        try:
+            history_token = await exchange_credentials_for_token(MS_SYNC_LOGIN, MS_SYNC_PASSWORD)
+        except HTTPException:
+            history_token = token  # sync hisobi ishlamasa ham, hech bo'lmasa o'z ko'rinishi ko'rsatiladi
+
+    channel_meta = await _get_pos_sales_channel_meta(history_token)
     channel_href = channel_meta["href"]
 
     data = await ms_request(
         "GET",
         "/entity/customerorder",
-        token=token,
+        token=history_token,
         params={
             "filter": f"salesChannel={channel_href}",
             "expand": "agent",
