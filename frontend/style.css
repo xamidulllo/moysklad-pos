@@ -337,6 +337,12 @@ main {
   line-height: 1;
 }
 
+.add-btn:disabled {
+  background: var(--surface-2);
+  color: var(--text-dim);
+  cursor: not-allowed;
+}
+
 .add-btn:active {
   background: var(--accent-dark);
 }

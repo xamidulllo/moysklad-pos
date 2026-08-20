@@ -29,6 +29,7 @@ MoySklad'ga so'rov shu kassirning shaxsiy tokeni bilan yuboriladi (auth.py'ga qa
 import asyncio
 import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -690,6 +691,25 @@ def _history_sort_key(moment: "str | None") -> str:
     return (moment or "").replace(" ", "T")
 
 
+# "Tarix" uchun umumiy sync hisobi tokeni — uzoqroq (10 daqiqa) keshlanadi,
+# global 60s keshdan alohida, chunki bu ancha KO'PROQ chidamlilik talab
+# qiladi: har bir "Tarix" ochilishi yangi token olsa, shu login bilan
+# boshqa joyda FAOL ishlatilayotgan sessiya (yoki sync'ning o'zi)
+# kutilmaganda uzilib qolishi mumkin edi (real productionda tasdiqlangan).
+_history_admin_token_cache: "tuple[float, str] | None" = None
+_HISTORY_ADMIN_TOKEN_TTL_SECONDS = 600
+
+
+async def _get_cached_history_admin_token() -> str:
+    global _history_admin_token_cache
+    now = time.time()
+    if _history_admin_token_cache and now - _history_admin_token_cache[0] < _HISTORY_ADMIN_TOKEN_TTL_SECONDS:
+        return _history_admin_token_cache[1]
+    token = await exchange_credentials_for_token(MS_SYNC_LOGIN, MS_SYNC_PASSWORD)
+    _history_admin_token_cache = (now, token)
+    return token
+
+
 @app.get("/api/orders/history")
 async def get_orders_history(token: str = Depends(get_current_token)):
     """Shu mini ilova orqali yaratilgan buyurtmalar tarixini qaytaradi:
@@ -709,8 +729,15 @@ async def get_orders_history(token: str = Depends(get_current_token)):
         # Shu sabab Tarix har doim shu umumiy hisob nomidan so'raladi — "Tarix
         # barcha kassirlarga umumiy" tamoyiliga mos, MoySklad'dagi huquq
         # cheklovlaridan qat'i nazar (real hisobda shunday muammo tasdiqlangan).
+        #
+        # MUHIM: bu token bir necha daqiqaga KESHLANADI (har safar yangisini
+        # OLMAYDI) — aks holda "Tarix" har ochilganda yangi token olinib,
+        # MoySklad bir login uchun faqat bitta faol token saqlagani sabab,
+        # aynan shu umumiy hisob bilan ilovada FAOL ishlayotgan boshqa
+        # foydalanuvchining sessiyasi (yoki sync'ning o'zi) kutilmaganda
+        # uzilib qolar edi (real productionda tasdiqlangan muammo).
         try:
-            history_token = await exchange_credentials_for_token(MS_SYNC_LOGIN, MS_SYNC_PASSWORD)
+            history_token = await _get_cached_history_admin_token()
         except HTTPException:
             history_token = token  # sync hisobi ishlamasa ham, hech bo'lmasa o'z ko'rinishi ko'rsatiladi
 

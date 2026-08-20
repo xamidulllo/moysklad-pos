@@ -224,7 +224,7 @@ function renderProducts(items) {
           <div class="product-price">${formatMoney(p.price)}</div>
           ${renderStockBadge(p.stock)}
         </div>
-        <button class="add-btn" data-idx="${idx}" type="button">+</button>
+        <button class="add-btn" data-idx="${idx}" type="button" ${isOutOfStock(p.stock) ? "disabled" : ""}>+</button>
       </div>`
     )
     .join("");
@@ -259,6 +259,15 @@ function renderStockBadge(stock) {
     return `<div class="stock-badge stock-out">Omborda yo'q</div>`;
   }
   return `<div class="stock-badge stock-in">Omborda: ${rounded.toLocaleString("ru-RU")} dona</div>`;
+}
+
+// "stock" faqat ombor tanlanganda keladi (aks holda null/undefined — bu holda
+// "yo'q" deb hisoblanmaydi, chunki qaysi ombor ekani noma'lum). MUHIM: tovar
+// BOSHQA omborlarda ko'p bo'lishi mumkin, lekin AYNAN shu tanlangan omborda
+// yo'q bo'lsa, MoySklad otgruzka yaratishni rad etadi (real hisobda
+// tasdiqlangan) — shuning uchun bu holatda savatga qo'shish qat'iy bloklanadi.
+function isOutOfStock(stock) {
+  return stock !== null && stock !== undefined && Math.round(stock * 100) / 100 <= 0;
 }
 
 function escapeHtml(str) {
@@ -313,6 +322,14 @@ async function loadCurrencies() {
 // alohida "bazaviy ekvivalent" hisoblashning hojati yo'q — checkout paytida
 // backend shu raqamni to'g'ridan-to'g'ri, shu valyuta bilan birga yuboradi.
 function addToCart(product) {
+  // Tugma "Omborda yo'q" bo'lganda o'zi o'chirilgan (renderProducts), lekin
+  // barkod-skaner to'g'ridan-to'g'ri shu funksiyani chaqiradi — shu sabab
+  // bu yerda ham qat'iy tekshiriladi (aks holda MoySklad keyinroq, sinxronlash
+  // paytida rad etadi, kassir esa buni darhol bilmay qolardi).
+  if (isOutOfStock(product.stock)) {
+    showToast(`"${product.name}" tanlangan omborda yo'q — savatga qo'shib bo'lmaydi`, true);
+    return;
+  }
   const existing = state.cart.find((i) => i.id === product.id);
   if (existing) {
     existing.quantity += 1;
@@ -867,10 +884,8 @@ scanFileInput.addEventListener("change", async () => {
       showToast(`Barkod topilmadi: ${decodedText}`, true);
       return;
     }
+    // addToCart o'zi "Omborda yo'q" bo'lsa qo'shmaydi va tegishli xabarni ko'rsatadi.
     addToCart(data.item);
-    if (data.item.stock !== null && data.item.stock !== undefined && data.item.stock <= 0) {
-      showToast(`Diqqat: "${data.item.name}" omborda yo'q`, true);
-    }
   } catch (err) {
     showToast("Suratda barkod topilmadi, qaytadan urinib ko'ring", true);
   } finally {
