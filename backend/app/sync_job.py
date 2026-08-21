@@ -15,6 +15,7 @@ urinish TAQIQLANADI) farqlanadi.
 """
 import json
 import logging
+import time
 
 from fastapi import HTTPException
 
@@ -27,6 +28,32 @@ from .schemas import CheckoutRequest
 logger = logging.getLogger("moysklad_pos.sync_job")
 
 _running = False
+
+# Bu token /api/orders/history (main.py) BILAN ham ULASHILADI — ikkalasi
+# mustaqil ravishda tez-tez yangi token olishning o'zi MUAMMONING SABABI edi:
+# MoySklad bir login uchun faqat bitta faol token saqlagani sabab, har bir
+# yangi token oldingi (masalan hali FAOL foydalanuvchi sessiyasidagi yoki
+# ikkinchisi ushlab turgan) tokenni bekor qilib qo'yardi — kassirlar
+# kutilmaganda "chiqib ketardi", "Tarix" va qidiruv esa 401 bilan ishlamay
+# qolardi (real productionda ko'p marta tasdiqlangan). Shu sabab BUTUN
+# ilova davomida FAQAT BITTA joyda, kamdan-kam (10 daqiqada bir) yangi
+# token so'raladi.
+_shared_admin_token_cache: "tuple[float, str] | None" = None
+SHARED_ADMIN_TOKEN_TTL_SECONDS = 600
+
+
+async def get_shared_admin_token(force_refresh: bool = False) -> str:
+    global _shared_admin_token_cache
+    now = time.time()
+    if (
+        not force_refresh
+        and _shared_admin_token_cache
+        and now - _shared_admin_token_cache[0] < SHARED_ADMIN_TOKEN_TTL_SECONDS
+    ):
+        return _shared_admin_token_cache[1]
+    token = await exchange_credentials_for_token(MS_SYNC_LOGIN, MS_SYNC_PASSWORD)
+    _shared_admin_token_cache = (now, token)
+    return token
 
 
 def _format_http_error(exc: HTTPException) -> str:
@@ -82,6 +109,14 @@ async def _sync_one_row(row: dict, token: str) -> str:
         )
         return "needs_manual_check"
     except HTTPException as exc:
+        if exc.status_code in (401, 403):
+            # Token eskirgan/bekor bo'lgan bo'lishi mumkin (masalan shu login
+            # bilan boshqa joyda yangi token olingan) — hali Sheets'ga
+            # "failed" deb yozmaymiz, chaqiruvchi (_run_sync_inner) yangi
+            # token bilan bir marta qayta urinib ko'radi. Hech qanday
+            # MoySklad hujjati yaratilmagan (auth bosqichida rad etilgan),
+            # shuning uchun qayta urinish butunlay xavfsiz.
+            return "auth_failed"
         await sheets_client.update_row(
             order_id,
             status=sheets_client.STATUS_FAILED,
@@ -126,9 +161,11 @@ async def _run_sync_inner() -> dict:
 
     # Avval token — hech qanday qatorga tegishdan OLDIN. Shu yerda xato
     # chiqsa, hech narsa o'zgartirilmagan, keyingi trigger butun navbatni
-    # xavfsiz qayta urinishi mumkin.
+    # xavfsiz qayta urinishi mumkin. Keshlangan (main.py'ning "Tarix" bilan
+    # ULASHILGAN) token ishlatiladi — sync har safar mustaqil yangi token
+    # so'ramaydi.
     try:
-        token = await exchange_credentials_for_token(MS_SYNC_LOGIN, MS_SYNC_PASSWORD)
+        token = await get_shared_admin_token()
     except HTTPException as exc:
         logger.error("Sync uchun MoySklad token olinmadi: %s", exc.detail)
         return {
@@ -139,8 +176,30 @@ async def _run_sync_inner() -> dict:
     rows = await sheets_client.get_syncable_rows()
     counts = {"synced": 0, "failed": 0, "needs_manual_check": 0, "skipped": 0}
     results = []
+    token_force_refreshed = False
     for row in rows:
         outcome = await _sync_one_row(row, token)
+        if outcome == "auth_failed":
+            # Keshlangan token boshqa joyda (masalan shu login bilan faol
+            # foydalanuvchi tomonidan) bekor qilingan bo'lishi mumkin — bir
+            # marta majburiy yangilab, shu qatorni qayta urinamiz.
+            if not token_force_refreshed:
+                token_force_refreshed = True
+                try:
+                    token = await get_shared_admin_token(force_refresh=True)
+                    outcome = await _sync_one_row(row, token)
+                except HTTPException as exc:
+                    logger.error("Token qayta olishda xato: %s", exc.detail)
+            if outcome == "auth_failed":
+                # Qayta urinish ham auth bilan muvaffaqiyatsiz — endi buni
+                # aniq "failed" deb yozamiz (jim qoldirmasdan).
+                await sheets_client.update_row(
+                    row["order_id"],
+                    status=sheets_client.STATUS_FAILED,
+                    last_error="MoySklad autentifikatsiya xatosi (token qayta yangilangandan keyin ham)",
+                    last_attempt_at=sheets_client.now_iso(),
+                )
+                outcome = "failed"
         counts[outcome] = counts.get(outcome, 0) + 1
         results.append({"order_id": row["order_id"], "outcome": outcome})
 
