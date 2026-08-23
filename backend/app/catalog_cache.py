@@ -18,12 +18,23 @@ import logging
 import time
 from typing import Optional
 
+import httpx
+from fastapi import HTTPException
+
 from .moysklad_client import ms_request
 
 logger = logging.getLogger("moysklad_pos.catalog_cache")
 
 REFRESH_INTERVAL_SECONDS = 3600
 _PAGE_SIZE = 1000
+# Umumiy httpx klient standart bo'yicha 25s timeout ishlatadi (interaktiv
+# so'rovlar uchun mos — kassir tezda javob kutadi). Lekin butun katalogni
+# (o'nlab sahifa) yuklash paytida MoySklad ba'zan bitta sahifaga shuncha
+# vaqtdan ko'proq javob berishi mumkin (real productionda ReadTimeout bilan
+# tasdiqlangan) — bu yangilash fonda ketadi, kassirni kutdirmaydi, shuning
+# uchun shu bitta chaqiruv turi uchun ancha kattaroq timeout ishlatiladi.
+_BULK_TIMEOUT_SECONDS = 60.0
+_BULK_MAX_ATTEMPTS = 3
 # MUHIM (real API'da to'g'ridan-to'g'ri o'lchab tekshirilgan): "expand=images"
 # "limit" taxminan 100 dan oshganda JIM RAVISHDA ishlamay qoladi — MoySklad
 # rasm ma'lumotini butunlay tashlab yuboradi (xato bermaydi, shunchaki "images"
@@ -46,12 +57,34 @@ def _get_lock(account_id: str) -> asyncio.Lock:
     return lock
 
 
+async def _fetch_page_with_retry(path: str, token: str, params: dict) -> dict:
+    """Bitta sahifani (MoySklad'ning vaqtinchalik sekinligiga chidamli holda)
+    yuklaydi — bir sahifadagi ReadTimeout butun ko'p o'nlab so'rovli katalog
+    yangilashini boshidan boshlashga majburlamasligi uchun bir necha marta
+    qayta uriniladi, har safar avvalgisidan ko'proq kutib."""
+    last_exc: Exception | None = None
+    for attempt in range(_BULK_MAX_ATTEMPTS):
+        try:
+            return await ms_request(
+                "GET", path, token=token, params=params, timeout=_BULK_TIMEOUT_SECONDS
+            )
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_exc = exc
+            logger.warning(
+                "Kataloq sahifasini yuklashda vaqtinchalik xatolik (%s, urinish %d/%d): %s",
+                path, attempt + 1, _BULK_MAX_ATTEMPTS, exc,
+            )
+            if attempt < _BULK_MAX_ATTEMPTS - 1:
+                await asyncio.sleep(2.0 * (attempt + 1))
+    raise last_exc
+
+
 async def _fetch_all(path: str, token: str, page_size: int = _PAGE_SIZE, **params) -> list[dict]:
     items: list[dict] = []
     offset = 0
     while True:
-        data = await ms_request(
-            "GET", path, token=token, params={"limit": page_size, "offset": offset, **params}
+        data = await _fetch_page_with_retry(
+            path, token, params={"limit": page_size, "offset": offset, **params}
         )
         rows = data.get("rows", [])
         items.extend(rows)
@@ -92,7 +125,14 @@ async def ensure_fresh(account_id: str, token: str) -> None:
     if account_id not in _last_refresh:
         async with _get_lock(account_id):
             if account_id not in _last_refresh:
-                await _refresh(account_id, token)
+                try:
+                    await _refresh(account_id, token)
+                except (httpx.TimeoutException, httpx.TransportError) as exc:
+                    logger.exception("Birinchi kataloq yuklashi muvaffaqiyatsiz")
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Katalog hali yuklanmoqda, birozdan keyin qayta urinib ko'ring",
+                    ) from exc
         return
 
     if time.time() - _last_refresh[account_id] < REFRESH_INTERVAL_SECONDS:
