@@ -80,6 +80,25 @@ async def lifespan(app: FastAPI):
                 "Ombor qoldiq keshini Sheets'dan tiklab bo'lmadi — davom etiladi, "
                 "lekin navbatdagi buyurtmalar qoldiqqa hisobga olinmasligi mumkin"
             )
+    # Tovar katalogini oldindan "isitib" qo'yamiz — aks holda qayta ishga
+    # tushirilgandan keyin BIRINCHI qidiruv so'rovi to'liq katalogni (rasmlar
+    # bilan) yuklashni kutib, ~20+ soniya davom etardi (catalog_cache.py'ga
+    # qarang). Ilova ishga tushishini BLOKLAMASLIK uchun fonda, alohida
+    # vazifada boshlanadi.
+    if MS_SYNC_LOGIN and MS_SYNC_PASSWORD:
+        async def _warm_catalog_cache():
+            try:
+                token = await sync_job.get_shared_admin_token()
+                account_id = await _get_account_id(token)
+                await catalog_cache.ensure_fresh(account_id, token)
+                logger.info("Katalog keshi oldindan isitildi (accountId=%s)", account_id)
+            except Exception:
+                logger.exception("Katalog keshini oldindan isitib bo'lmadi — birinchi qidiruv sekinroq bo'lishi mumkin")
+
+        warm_task = asyncio.create_task(_warm_catalog_cache())
+        catalog_cache._background_tasks.add(warm_task)
+        warm_task.add_done_callback(catalog_cache._background_tasks.discard)
+
     # Telegram bot FastAPI bilan bitta process ichida, fon vazifasi sifatida ishga
     # tushadi — BOT_TOKEN sozlanmagan bo'lsa (lokal dev), jim o'tkazib yuboriladi.
     await start_bot()

@@ -1,10 +1,10 @@
 """Butun tovar katalogi (entity/assortment) va mijozlar ro'yxatini
 (entity/counterparty) xotirada saqlaydi — qidiruv har safar MoySklad'ga
 so'rov yubormasdan, to'g'ridan-to'g'ri xotiradan (deyarli oniy) javob berishi
-uchun. Ma'lumot 1 soatga eskirgach, KEYINGI so'rov uni fonda emas, o'sha
-so'rovning o'zida yangilaydi — alohida background vazifa/hardcoded login
-kerak emas, chunki bu multi-tenant ilova (istalgan MoySklad login ishlaydi)
-va faqat HAQIQATDA ishlatilayotgan hisoblar uchun keshlash kifoya.
+uchun. Ma'lumot 1 soatga eskirgach, KEYINGI so'rov uni emas, FONDAGI alohida
+vazifa yangilaydi (pastdagi ensure_fresh()'ga qarang) — chunki rasmlar bilan
+to'liq katalogni qayta yuklash o'nlab soniya olishi mumkin (quyidagi eslatma),
+buni kassirning bitta so'rovi ichida kutdirib bo'lmaydi.
 
 MUHIM (xavfsizlik): kesh MoySklad hisobi (accountId) bo'yicha AJRATILGAN —
 turli MoySklad login'lar turli hisoblarga tegishli bo'lishi mumkin (ilova
@@ -14,13 +14,23 @@ mijoz ro'yxatini ko'rib qolishi mumkin edi. Har bir accountId o'zining
 alohida ro'yxatiga ega.
 """
 import asyncio
+import logging
 import time
 from typing import Optional
 
 from .moysklad_client import ms_request
 
+logger = logging.getLogger("moysklad_pos.catalog_cache")
+
 REFRESH_INTERVAL_SECONDS = 3600
 _PAGE_SIZE = 1000
+# MUHIM (real API'da to'g'ridan-to'g'ri o'lchab tekshirilgan): "expand=images"
+# "limit" taxminan 100 dan oshganda JIM RAVISHDA ishlamay qoladi — MoySklad
+# rasm ma'lumotini butunlay tashlab yuboradi (xato bermaydi, shunchaki "images"
+# maydoni bo'sh qaytadi). limit=100'da 40/100 tovarda rasm bor edi, limit=150'da
+# 0/150. Shu sabab tovarlar UCHUN alohida, kichikroq sahifa hajmi ishlatiladi
+# (mijozlarga rasm kerak emas, ular uchun 1000 xavfsiz).
+_ASSORTMENT_PAGE_SIZE = 100
 
 _assortment: dict[str, list[dict]] = {}
 _counterparties: dict[str, list[dict]] = {}
@@ -36,24 +46,24 @@ def _get_lock(account_id: str) -> asyncio.Lock:
     return lock
 
 
-async def _fetch_all(path: str, token: str, **params) -> list[dict]:
+async def _fetch_all(path: str, token: str, page_size: int = _PAGE_SIZE, **params) -> list[dict]:
     items: list[dict] = []
     offset = 0
     while True:
         data = await ms_request(
-            "GET", path, token=token, params={"limit": _PAGE_SIZE, "offset": offset, **params}
+            "GET", path, token=token, params={"limit": page_size, "offset": offset, **params}
         )
         rows = data.get("rows", [])
         items.extend(rows)
-        if len(rows) < _PAGE_SIZE:
+        if len(rows) < page_size:
             break
-        offset += _PAGE_SIZE
+        offset += page_size
     return items
 
 
 async def _refresh(account_id: str, token: str) -> None:
     assortment, counterparties = await asyncio.gather(
-        _fetch_all("/entity/assortment", token, expand="images"),
+        _fetch_all("/entity/assortment", token, page_size=_ASSORTMENT_PAGE_SIZE, expand="images"),
         _fetch_all("/entity/counterparty", token),
     )
     _assortment[account_id] = assortment
@@ -61,19 +71,50 @@ async def _refresh(account_id: str, token: str) -> None:
     _last_refresh[account_id] = time.time()
 
 
+_refreshing: dict[str, bool] = {}
+# asyncio.create_task() qaytargan Task'ga hech kim havola saqlamasa, u tugashidan
+# OLDIN chiqindi yig'uvchi (garbage collector) tomonidan olib tashlanishi mumkin
+# (Python'ning tasdiqlangan xatti-harakati) — shu sabab tugagunicha shu to'plamda
+# saqlanadi.
+_background_tasks: set = set()
+
+
 async def ensure_fresh(account_id: str, token: str) -> None:
-    """Kesh hali umuman to'ldirilmagan yoki 1 soatdan eski bo'lsa, shu yerning
-    o'zida (chaqiruvchi so'rov ichida) yangilaydi. Lock — bir vaqtda bir nechta
-    so'rov keshni bir vaqtda ikki marta yangilab, MoySklad'ga ortiqcha
-    so'rov yubormasligi uchun."""
-    last = _last_refresh.get(account_id, 0.0)
-    if time.time() - last < REFRESH_INTERVAL_SECONDS:
+    """Kesh HALI UMUMAN to'ldirilmagan bo'lsa — chaqiruvchi so'rovning o'zida
+    kutib turadi (ko'rsatadigan boshqa ma'lumot yo'q, ilojsiz).
+
+    Lekin kesh ALLAQACHON bор, faqat 1 soatdan eski bo'lsa — chaqiruvchini
+    UMUMAN kutdirmaydi: eskirgan (lekin mavjud) ma'lumot darhol qaytariladi,
+    yangilash esa fonda, alohida vazifada boshlanadi. MUHIM (real hisobda
+    o'lchab tekshirilgan): "expand=images" bilan to'liq katalogni (100 tadan
+    bo'lib, quyidagi eslatmaga qarang) yangilash ~20+ soniya vaqt oladi — buni
+    kassirning bitta qidiruv so'rovi ichida kutdirish mumkin emas."""
+    if account_id not in _last_refresh:
+        async with _get_lock(account_id):
+            if account_id not in _last_refresh:
+                await _refresh(account_id, token)
         return
-    async with _get_lock(account_id):
-        last = _last_refresh.get(account_id, 0.0)
-        if time.time() - last < REFRESH_INTERVAL_SECONDS:
-            return  # boshqa so'rov shu orada allaqachon yangilagan
-        await _refresh(account_id, token)
+
+    if time.time() - _last_refresh[account_id] < REFRESH_INTERVAL_SECONDS:
+        return
+
+    if _refreshing.get(account_id):
+        return  # fonda yangilash allaqachon ketyapti — yana bittasini boshlamaymiz
+
+    async def _background_refresh() -> None:
+        _refreshing[account_id] = True
+        try:
+            async with _get_lock(account_id):
+                if time.time() - _last_refresh.get(account_id, 0.0) >= REFRESH_INTERVAL_SECONDS:
+                    await _refresh(account_id, token)
+        except Exception:
+            logger.exception("Fon kataloq yangilashda xatolik — eski kesh davom etadi")
+        finally:
+            _refreshing[account_id] = False
+
+    task = asyncio.create_task(_background_refresh())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 def _matches(row: dict, query: str) -> bool:
