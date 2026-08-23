@@ -90,7 +90,20 @@ async def lifespan(app: FastAPI):
             try:
                 token = await sync_job.get_shared_admin_token()
                 account_id = await _get_account_id(token)
-                await catalog_cache.ensure_fresh(account_id, token)
+                try:
+                    await catalog_cache.ensure_fresh(account_id, token)
+                except HTTPException as exc:
+                    if exc.status_code not in (401, 403):
+                        raise
+                    # Umumiy token boshqa joyda (masalan shu login bilan deploy
+                    # vaqtida bir nechta instance qisqa vaqt bir-birining ustidan
+                    # chiqib ketishi natijasida) bekor qilingan bo'lishi mumkin —
+                    # sync_job.py'dagi bilan bir xil naqsh: bir marta majburiy
+                    # yangilab qayta uriniladi.
+                    logger.warning("Isitish uchun token bekor qilingan (401/403) — majburiy yangilab qayta urinilmoqda")
+                    token = await sync_job.get_shared_admin_token(force_refresh=True)
+                    account_id = await _get_account_id(token)
+                    await catalog_cache.ensure_fresh(account_id, token)
                 logger.info("Katalog keshi oldindan isitildi (accountId=%s)", account_id)
             except Exception:
                 logger.exception("Katalog keshini oldindan isitib bo'lmadi — birinchi qidiruv sekinroq bo'lishi mumkin")
