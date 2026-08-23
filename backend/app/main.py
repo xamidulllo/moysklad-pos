@@ -730,25 +730,40 @@ async def get_orders_history(token: str = Depends(get_current_token)):
         # sessiyasi kutilmaganda uzilib qolar edi (real productionda
         # tasdiqlangan muammo — ikkalasi alohida keshlanganda ham hali
         # bir-birini bekor qilib turardi).
+        using_shared_token = True
         try:
             history_token = await sync_job.get_shared_admin_token()
         except HTTPException:
             history_token = token  # sync hisobi ishlamasa ham, hech bo'lmasa o'z ko'rinishi ko'rsatiladi
+            using_shared_token = False
+    else:
+        using_shared_token = False
 
-    channel_meta = await _get_pos_sales_channel_meta(history_token)
-    channel_href = channel_meta["href"]
+    async def _fetch(tok: str) -> dict:
+        channel_meta = await _get_pos_sales_channel_meta(tok)
+        return await ms_request(
+            "GET",
+            "/entity/customerorder",
+            token=tok,
+            params={
+                "filter": f"salesChannel={channel_meta['href']}",
+                "expand": "agent",
+                "order": "moment,desc",
+                "limit": 50,
+            },
+        )
 
-    data = await ms_request(
-        "GET",
-        "/entity/customerorder",
-        token=history_token,
-        params={
-            "filter": f"salesChannel={channel_href}",
-            "expand": "agent",
-            "order": "moment,desc",
-            "limit": 50,
-        },
-    )
+    try:
+        data = await _fetch(history_token)
+    except HTTPException as exc:
+        if not using_shared_token or exc.status_code not in (401, 403):
+            raise
+        # Umumiy token boshqa joyda (masalan katalog isitish yoki sync ishi
+        # tomonidan) bekor qilingan bo'lishi mumkin — bir marta majburiy
+        # yangilab qayta uriniladi (sync_job.py'dagi bilan bir xil naqsh).
+        logger.warning("Tarix uchun umumiy token bekor qilingan (401/403) — majburiy yangilab qayta urinilmoqda")
+        history_token = await sync_job.get_shared_admin_token(force_refresh=True)
+        data = await _fetch(history_token)
 
     items = []
     for row in data.get("rows", []):
