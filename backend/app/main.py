@@ -778,15 +778,13 @@ async def shop_test_diagnose(_: None = Depends(require_sync_secret)):
     )
     order_summaries = []
     for o in orders.get("rows", []):
-        order_href = o["meta"]["href"]
-        demands = await ms_request(
-            "GET", "/entity/demand", token=token,
-            params={"filter": f"customerOrder={order_href}", "limit": 10},
-        )
+        full_order = await ms_request("GET", f"/entity/customerorder/{o['id']}", token=token)
         order_summaries.append({
             "id": o["id"], "name": o.get("name"), "moment": o.get("moment"),
             "description": o.get("description"),
-            "linked_demands": [{"id": d["id"], "name": d.get("name")} for d in demands.get("rows", [])],
+            "sum": full_order.get("sum"),
+            "shipped_sum": full_order.get("shippedSum"),
+            "payed_sum": full_order.get("payedSum"),
         })
     return {
         "business_day": business_day,
