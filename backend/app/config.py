@@ -74,13 +74,18 @@ GOOGLE_SHEETS_WORKSHEET_NAME = os.getenv("GOOGLE_SHEETS_WORKSHEET_NAME", "Orders
 # ---------------------------------------------------------------------------
 SHOP_ORGANIZATION_ID = os.getenv("SHOP_ORGANIZATION_ID", "").strip() or None
 SHOP_PROJECT_NAME = os.getenv("SHOP_PROJECT_NAME", "Do'kon").strip()
-SHOP_AGENT_NAME = os.getenv("SHOP_AGENT_NAME", "Do'kon kliyent").strip()
+# MUHIM (real hisobda tekshirilgan): mijozning HAQIQIY nomi "kilyent" deb
+# yozilgan (odatdagi "kliyent" imlosi emas) — aniq shu yozilishda MoySklad'da
+# mavjud, boshqacha yozilsa hech qanday mos kelmaydi.
+SHOP_AGENT_NAME = os.getenv("SHOP_AGENT_NAME", "Do'kon kilyent").strip()
 
 # Narx turi ustuvorlik tartibi — ro'yxatdagi birinchi topilgan nom ishlatiladi,
 # hech biri topilmasa MoySklad'ning standart "Цена продажи"siga tushiladi.
+# MUHIM (real hisobda tekshirilgan): haqiqiy nomi "Do'kon Sotov" (katta S,
+# "sotuv" emas "sotov").
 SHOP_PRICE_TYPE_NAMES = [
     name.strip()
-    for name in os.getenv("SHOP_PRICE_TYPE_NAMES", "Do'kon sotuv").split(",")
+    for name in os.getenv("SHOP_PRICE_TYPE_NAMES", "Do'kon Sotov").split(",")
     if name.strip()
 ]
 
