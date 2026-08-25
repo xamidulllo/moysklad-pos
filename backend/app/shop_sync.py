@@ -177,6 +177,11 @@ async def _create_daily_order_and_demand(business_day: str, rows: list, token: s
     org_meta = _org_meta()
     agent_meta = await _get_shop_agent_meta(token)
     project_meta = await _get_shop_project_meta(token)
+    # Do'kon bitta ombor/joylashuvda ishlaydi deb qabul qilingan — kunlik
+    # zakaz+otgruzka shu kunning BIRINCHI qatoridagi ombordan olinadi (agar
+    # kelajakda bir necha ombor kerak bo'lsa, kunni ombor bo'yicha ham
+    # guruhlash kerak bo'ladi).
+    store_meta = CheckoutRequest.model_validate(json.loads(rows[0]["payload_json"])).store_meta
 
     positions: list = []
     for row in rows:
@@ -185,6 +190,7 @@ async def _create_daily_order_and_demand(business_day: str, rows: list, token: s
     order_body = {
         "organization": {"meta": org_meta},
         "agent": {"meta": agent_meta},
+        "store": {"meta": store_meta},
         "positions": positions,
         "applicable": True,
         "salesChannel": {"meta": await _get_pos_sales_channel_meta(token)},
@@ -212,6 +218,7 @@ async def _create_daily_order_and_demand(business_day: str, rows: list, token: s
     demand_body = {
         "organization": {"meta": org_meta},
         "agent": {"meta": agent_meta},
+        "store": {"meta": store_meta},
         "positions": positions,
         "applicable": True,
         "customerOrder": {"meta": order["meta"]},

@@ -820,6 +820,8 @@ async def shop_test_seed(_: None = Depends(require_sync_secret)):
     token = await sync_job.get_shared_admin_token()
     assortment = await ms_request("GET", "/entity/assortment", token=token, params={"limit": 1})
     product = assortment["rows"][0]
+    stores_data = await ms_request("GET", "/entity/store", token=token, params={"limit": 1})
+    store = stores_data["rows"][0]
 
     accounts_data = await ms_request(
         "GET", f"/entity/organization/{SHOP_ORGANIZATION_ID}/accounts", token=token, params={"limit": 100}
@@ -849,7 +851,7 @@ async def shop_test_seed(_: None = Depends(require_sync_secret)):
 
     # 1) Oddiy so'm sotuv, "Do'kon naxt so'm" orqali to'langan.
     payload1 = CheckoutRequest(
-        store_meta={"href": product["meta"]["href"]},  # store shart emas shop_sync uchun, lekin schema talab qiladi
+        store_meta=store["meta"],
         items=[{"assortment_meta": product["meta"], "quantity": 1, "price": 1000, "id": product["id"], "name": product.get("name")}],
         is_debt=False,
         account_meta=som_account["meta"],
@@ -867,7 +869,7 @@ async def shop_test_seed(_: None = Depends(require_sync_secret)):
     # 2) $ naqd + so'm qaytim oqimi: tovar $0.17 (2000 so'm ekvivalenti, kurs
     # 12000), mijoz $1 beradi, 1000 so'm qaytim oladi.
     payload2 = CheckoutRequest(
-        store_meta={"href": product["meta"]["href"]},
+        store_meta=store["meta"],
         items=[{"assortment_meta": product["meta"], "quantity": 1, "price": 0.17, "id": product["id"], "name": product.get("name")}],
         is_debt=False,
         account_meta=usd_account["meta"],
