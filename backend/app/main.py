@@ -763,25 +763,6 @@ async def sync_run(_: None = Depends(require_sync_secret)):
     return await sync_job.run_sync()
 
 
-@app.post("/api/shop/test-clear-daily")
-async def shop_test_clear_daily(_: None = Depends(require_sync_secret)):
-    """VAQTINCHALIK: sinov paytida yaratilib, keyin qo'lda o'chirilgan MoySklad
-    hujjatlariga ishora qilib qolgan DailyOrders qatorini tozalaydi — aks
-    holda bugungi HAQIQIY sotuvlar shu (endi mavjud bo'lmagan) zakazga
-    bog'lanishga urinib, xato berardi."""
-    from .shop_day import business_day_key, now_in_shop_tz
-
-    business_day = business_day_key(now_in_shop_tz())
-    await sheets_client.update_daily_order(
-        business_day,
-        status=sheets_client.DAILY_STATUS_PENDING,
-        chain_started_at="",
-        last_error="",
-        ms_order_id="", ms_order_name="", ms_demand_id="", ms_demand_name="",
-    )
-    return {"business_day": business_day, "cleared": True}
-
-
 # ---------------------------------------------------------------------------
 # Buyurtmalar tarixi — faqat shu ilova orqali kiritilganlar
 # ---------------------------------------------------------------------------
