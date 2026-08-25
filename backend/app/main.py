@@ -38,13 +38,14 @@ from fastapi import Cookie, Depends, FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import catalog_cache, sheets_client, stock_cache, sync_job
+from . import catalog_cache, sheets_client, shop_sync, stock_cache, sync_job
 from .auth import create_session, delete_session, get_current_session, get_current_token, require_sync_secret
 from .bot import start_bot, stop_bot
 from .cache import _cached
 from .checkout_chain import _get_default_currency_id, _get_pos_sales_channel_meta, execute_checkout_chain
 from .config import (
     CHECKOUT_MODE,
+    DEFAULT_EXCHANGE_RATE,
     EXPECTED_MS_ORGANIZATION_ID,
     GOOGLE_SHEETS_SPREADSHEET_ID,
     MOYSKLAD_BASE_URL,
@@ -53,7 +54,11 @@ from .config import (
     SESSION_COOKIE_NAME,
     SESSION_COOKIE_SECURE,
     SESSION_TTL_HOURS,
+    SHOP_ALLOWED_ACCOUNT_NAMES,
+    SHOP_ORGANIZATION_ID,
+    SHOP_PRICE_TYPE_NAMES,
 )
+from .shop_day import business_day_key, now_in_shop_tz
 from .moysklad_client import close_client as close_ms_client
 from .moysklad_client import exchange_credentials_for_token, ms_request
 from .schemas import CheckoutRequest, CounterpartyCreate, LoginRequest, PendingOrderItemsEdit
@@ -152,14 +157,20 @@ _DEFAULT_PRICE_TYPE_EXTERNAL_CODE = "cbcf493b-55bc-11d9-848a-00112f43529a"
 
 async def _get_default_price_type_id(token: str) -> "str | None":
     """Tovarlarning bir nechta narx turi bo'lishi mumkin (masalan "Цена продажи"
-    dollarda, kassir o'zi qo'shgan "Do'kon Sotov" so'mda) — POS uchun har doim
-    MoySklad'ning standart "Цена продажи" turini ishlatish kerak, aks holda
-    qaysi narx tasodifan array'da birinchi kelsa, o'sha noto'g'ri olinadi.
+    dollarda, do'kon o'zi qo'shgan "Do'kon sotuv" so'mda). Avval
+    config.SHOP_PRICE_TYPE_NAMES ro'yxatidagi nomlar tartib bilan qidiriladi
+    (masalan "Do'kon sotuv"); hech biri topilmasa, MoySklad'ning standart
+    "Цена продажи" turiga tushiladi — aks holda qaysi narx tasodifan
+    array'da birinchi kelsa, o'sha noto'g'ri olinadi.
     """
 
     async def loader():
         data = await ms_request("GET", "/context/companysettings", token=token)
         price_types = data.get("priceTypes") or []
+        for name in SHOP_PRICE_TYPE_NAMES:
+            match = next((pt for pt in price_types if pt.get("name") == name), None)
+            if match:
+                return {"id": match["id"]}
         match = next(
             (
                 pt
@@ -296,6 +307,15 @@ def _assortment_row_to_item(
         stock = stock_by_store.get(row.get("id"), 0.0)
         stock = max(0.0, stock - stock_cache.get_deduction(store_id, row.get("id")))
 
+    # MUHIM (tekshirish kerak): MoySklad odatda "uom"ni assortment qatorida
+    # to'g'ridan-to'g'ri (expand'siz) "shт"/"л"/"м" kabi nom bilan qaytaradi.
+    # Agar productionda "name" bo'sh chiqib qolsa, catalog_cache.py'dagi
+    # assortment so'rovi "expand=uom" bilan ham to'ldirilishi kerak bo'ladi
+    # (rasmlar uchun topilgan "limit>100 sinab ishlamay qoladi" muammosi
+    # takrorlanmasligi uchun avval kichik sahifada sinab ko'rilsin).
+    uom = row.get("uom") or {}
+    uom_name = uom.get("name")
+
     return {
         "id": row.get("id"),
         "meta": row.get("meta"),
@@ -307,6 +327,7 @@ def _assortment_row_to_item(
         "image_url": _extract_image_url(row),
         "type": (row.get("meta") or {}).get("type"),
         "stock": stock,
+        "uom_name": uom_name,
     }
 
 
@@ -499,6 +520,12 @@ async def get_accounts(token: str = Depends(get_current_token)):
                         "organization_id": org_id,
                     }
                 )
+        # Do'kon rejimida faqat aniq belgilangan shotlar ko'rsatiladi —
+        # kassirni kerak bo'lmagan (masalan boshqa tashkilotlarga tegishli)
+        # shotlar bilan chalg'itmaslik uchun (nom bo'yicha aniq moslik).
+        if SHOP_ALLOWED_ACCOUNT_NAMES:
+            allowed = set(SHOP_ALLOWED_ACCOUNT_NAMES)
+            items = [i for i in items if i["name"] in allowed]
         return {"items": items}
 
     return await _cached("accounts", token, loader)
@@ -547,6 +574,14 @@ async def get_currencies(token: str = Depends(get_current_token)):
     return await _cached("currencies", token, loader)
 
 
+@app.get("/api/shop/settings")
+async def get_shop_settings(_: dict = Depends(get_current_session)):
+    """Do'kon rejimi uchun standart sozlamalar — hozircha faqat standart
+    dollar kursi (kassir savat ekranida xohlaganda o'zgartirishi mumkin,
+    bu shunchaki boshlang'ich qiymat)."""
+    return {"default_exchange_rate": DEFAULT_EXCHANGE_RATE}
+
+
 # ---------------------------------------------------------------------------
 # Checkout: Заказ покупателя -> Otgruzka -> To'lov
 # ---------------------------------------------------------------------------
@@ -580,6 +615,40 @@ def _stock_cache_items(items) -> list[tuple[str, float]]:
 async def checkout(payload: CheckoutRequest, session: dict = Depends(get_current_session)):
     if not payload.items:
         raise HTTPException(status_code=400, detail="Savat bo'sh")
+
+    if SHOP_ORGANIZATION_ID:
+        # Do'kon rejimi: checkout hech qachon MoySklad'ga to'g'ridan-to'g'ri
+        # yozmaydi — har doim navbatga qo'yiladi. Tashkilot/loyiha/kontragent
+        # bu yerda kerak emas (frontend endi ularni yubormaydi) — ular
+        # shop_sync.py tomonidan kunlik birlashtirish paytida config'dagi
+        # SHOP_ORGANIZATION_ID/SHOP_PROJECT_NAME/SHOP_AGENT_NAME'dan hal
+        # qilinadi. "business_day" — Toshkent vaqti bo'yicha 16:50 chegarasi
+        # asosida hisoblanadi (shop_day.py).
+        order_id = str(uuid4())
+        store_id = _id_from_href((payload.store_meta or {}).get("href", ""))
+        business_day = business_day_key(now_in_shop_tz())
+
+        await sheets_client.append_pending_order(
+            order_id=order_id,
+            cashier_name=session["employee_name"],
+            store_id=store_id,
+            store_name=payload.store_name,
+            agent_name=payload.agent_name,
+            items_summary=_items_summary(payload.items),
+            total_sum=_items_total(payload.items),
+            currency_name=payload.currency_name,
+            is_debt=payload.is_debt,
+            payload_json=payload.model_dump_json(),
+            business_day=business_day,
+        )
+        stock_cache.apply_order(order_id, store_id, _stock_cache_items(payload.items))
+
+        return {
+            "mode": "queue",
+            "order_id": order_id,
+            "status": sheets_client.STATUS_PENDING,
+            "queued_at": sheets_client.now_iso(),
+        }
 
     if not _order_uses_queue(payload):
         result = await execute_checkout_chain(payload, session["token"])
@@ -680,13 +749,17 @@ async def delete_pending_order(order_id: str, session: dict = Depends(get_curren
 
 
 # ---------------------------------------------------------------------------
-# Google Apps Script trigger shu yerni chaqiradi (00:00/06:00/12:00/18:00,
-# Asia/Tashkent) — navbatdagi buyurtmalarni MoySklad'ga ko'chiradi.
+# Google Apps Script trigger shu yerni chaqiradi — navbatdagi buyurtmalarni
+# MoySklad'ga ko'chiradi. Do'kon rejimida (SHOP_ORGANIZATION_ID sozlangan)
+# kuniga BIR MARTA, 16:55 Toshkent vaqtida (shop_sync.py — kunlik
+# birlashtirish); aks holda hozirgidek 4 marta/kunda (sync_job.py).
 # ---------------------------------------------------------------------------
 
 
 @app.post("/api/sync/run")
 async def sync_run(_: None = Depends(require_sync_secret)):
+    if SHOP_ORGANIZATION_ID:
+        return await shop_sync.run_shop_sync()
     return await sync_job.run_sync()
 
 

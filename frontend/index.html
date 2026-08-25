@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
   <title>POS Kassa — MoySklad</title>
-  <meta name="theme-color" content="#0f172a" />
+  <meta name="theme-color" content="#eef3fb" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -107,10 +107,9 @@
       <section id="view-checkout" class="view">
         <h2 class="view-title">To'lov</h2>
 
-        <div class="form-group" id="orgGroup">
-          <label for="orgSelect">Tashkilot</label>
-          <select id="orgSelect"></select>
-        </div>
+        <!-- Do'kon rejimi: tashkilot (avtoservisnum) / loyiha (Do'kon) / mijoz
+             (Do'kon kliyent) doim bir xil — tanlash ekranlari kerak emas,
+             backend'ning o'zi belgilaydi. -->
 
         <!-- Ombor endi Mahsulotlar ekranida tanlanadi (qoldiqni to'g'ri ko'rsatish
              uchun) — bu yerda alohida takroriy tanlov yo'q, lekin kassir qaysi
@@ -118,18 +117,6 @@
         <div class="form-group">
           <label>Ombor</label>
           <div id="checkoutStoreInfo" class="selected-chip">—</div>
-        </div>
-
-        <div class="form-group">
-          <label for="agentSearch">Mijoz</label>
-          <input type="text" id="agentSearch" placeholder="Mijozni ism bo'yicha qidirish..." autocomplete="off" />
-          <div id="agentResults" class="dropdown-results hidden"></div>
-          <div id="agentSelected" class="selected-chip hidden"></div>
-          <div id="newAgentForm" class="new-agent-form hidden">
-            <input type="text" id="newAgentName" placeholder="Yangi mijoz ismi..." autocomplete="off" />
-            <button id="saveNewAgentBtn" type="button" class="secondary-btn">Saqlash</button>
-          </div>
-          <button id="showNewAgentBtn" type="button" class="link-btn">+ Yangi mijoz qo'shish</button>
         </div>
 
         <div class="form-group checkbox-group">
@@ -154,13 +141,19 @@
               Bo'sh qoldirilsa — hozirgi vaqt. Kartada oldindan to'langan bo'lsa, shu yerga haqiqiy vaqtni kiriting.
             </div>
           </div>
-        </div>
 
-        <div class="form-group">
-          <label for="projectSelect">Loyiha / Проект (ixtiyoriy)</label>
-          <select id="projectSelect">
-            <option value="">— Belgilanmagan —</option>
-          </select>
+          <!-- Faqat chet el valyutasidagi (masalan $) hisob tanlanganda ko'rinadi —
+               mijoz naqd chet el puli bergan, lekin sotuv summasidan ko'proq
+               bo'lgani uchun so'mda qaytim berilgan holat uchun. -->
+          <div class="form-group hidden" id="cashChangeGroup">
+            <label for="cashGivenInput">Mijoz qo'lga bergan summa (ixtiyoriy)</label>
+            <input type="number" id="cashGivenInput" inputmode="decimal" step="0.01" min="0" placeholder="Masalan: 100" />
+            <label for="cashChangeInput" style="margin-top: 8px;">Qaytim, so'mda (ixtiyoriy)</label>
+            <input type="number" id="cashChangeInput" inputmode="decimal" step="1" min="0" placeholder="Masalan: 4000" />
+            <div class="hint" style="padding: 6px 0; text-align: left;">
+              To'ldirilsa: to'liq berilgan summa kirim sifatida, qaytim esa alohida chiqim sifatida yoziladi.
+            </div>
+          </div>
         </div>
 
         <div class="form-group">

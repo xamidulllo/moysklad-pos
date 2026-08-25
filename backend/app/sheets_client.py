@@ -30,7 +30,7 @@ COLUMNS = [
     "order_id", "status", "created_at", "edited_at", "cashier_name",
     "store_id", "store_name", "agent_name", "items_summary", "total_sum",
     "currency_name", "is_debt", "payload_json", "chain_started_at",
-    "last_attempt_at", "last_error", "synced_at",
+    "last_attempt_at", "last_error", "synced_at", "business_day",
     "ms_order_id", "ms_order_name", "ms_demand_id", "ms_demand_name",
     "ms_payment_id", "ms_payment_name",
 ]
@@ -41,6 +41,21 @@ STATUS_FAILED = "failed"
 STATUS_NEEDS_MANUAL_CHECK = "needs_manual_check"
 STATUS_SYNCED = "synced"
 STATUS_CANCELLED = "cancelled"
+
+# Do'kon rejimi: bir ish kuni uchun bitta umumiy MoySklad zakazi+otgruzkasini
+# kuzatib boradigan alohida jadval varag'i ("DailyOrders"). `business_day`
+# (shop_day.business_day_key() natijasi, "YYYY-MM-DD") — manzillash kaliti,
+# xuddi asosiy jadvaldagi order_id kabi.
+DAILY_ORDERS_WORKSHEET_NAME = "DailyOrders"
+DAILY_COLUMNS = [
+    "business_day", "status", "created_at", "chain_started_at", "last_error",
+    "ms_order_id", "ms_order_name", "ms_demand_id", "ms_demand_name",
+]
+
+DAILY_STATUS_PENDING = "pending"
+DAILY_STATUS_SYNCING = "syncing"
+DAILY_STATUS_SYNCED = "synced"
+DAILY_STATUS_NEEDS_MANUAL_CHECK = "needs_manual_check"
 
 # Bu holatlardagi qatorlar hali MoySklad'ning o'z qoldig'ida hisobga
 # olinmagan — shuning uchun ombor qoldig'idan (stock_cache) ayirilib turishi
@@ -63,16 +78,16 @@ def now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _row_to_dict(row: list, row_number: int) -> dict:
-    padded = list(row) + [""] * (len(COLUMNS) - len(row))
-    d = dict(zip(COLUMNS, padded))
+def _row_to_dict(row: list, row_number: int, columns: list = COLUMNS) -> dict:
+    padded = list(row) + [""] * (len(columns) - len(row))
+    d = dict(zip(columns, padded))
     d["_row_number"] = row_number
     return d
 
 
-def _dict_to_row(d: dict) -> list:
+def _dict_to_row(d: dict, columns: list = COLUMNS) -> list:
     out = []
-    for col in COLUMNS:
+    for col in columns:
         value = d.get(col)
         if value is None:
             out.append("")
@@ -85,6 +100,8 @@ def _dict_to_row(d: dict) -> list:
 
 _worksheet: "gspread.Worksheet | None" = None
 _worksheet_lock = asyncio.Lock()
+_daily_worksheet: "gspread.Worksheet | None" = None
+_daily_worksheet_lock = asyncio.Lock()
 
 
 def _build_client_sync() -> gspread.Client:
@@ -112,24 +129,24 @@ def _build_client_sync() -> gspread.Client:
     return gspread.authorize(creds)
 
 
-def _open_worksheet_sync() -> gspread.Worksheet:
+def _open_worksheet_sync(worksheet_name: str, columns: list) -> gspread.Worksheet:
     if not config.GOOGLE_SHEETS_SPREADSHEET_ID:
         raise SheetsNotConfigured("GOOGLE_SHEETS_SPREADSHEET_ID sozlanmagan")
     client = _build_client_sync()
     spreadsheet = client.open_by_key(config.GOOGLE_SHEETS_SPREADSHEET_ID)
     try:
-        ws = spreadsheet.worksheet(config.GOOGLE_SHEETS_WORKSHEET_NAME)
+        ws = spreadsheet.worksheet(worksheet_name)
     except gspread.WorksheetNotFound:
-        ws = spreadsheet.add_worksheet(config.GOOGLE_SHEETS_WORKSHEET_NAME, rows=1000, cols=len(COLUMNS))
+        ws = spreadsheet.add_worksheet(worksheet_name, rows=1000, cols=len(columns))
     values = ws.get_all_values()
-    if not values or values[0][: len(COLUMNS)] != COLUMNS:
-        ws.update("A1", [COLUMNS])
+    if not values or values[0][: len(columns)] != columns:
+        ws.update("A1", [columns])
         # Sxema o'zgarganda (masalan ustun soni kamaysa) eski sarlavha
         # qatoridan uzunroq bo'lgan "qoldiq" katakchalar tozalanmasdan
         # qolib ketmasligi uchun — ular chalkashlik keltirib chiqarishi mumkin.
         old_len = len(values[0]) if values else 0
-        if old_len > len(COLUMNS):
-            extra_col_letter_start = gspread.utils.rowcol_to_a1(1, len(COLUMNS) + 1).rstrip("1")
+        if old_len > len(columns):
+            extra_col_letter_start = gspread.utils.rowcol_to_a1(1, len(columns) + 1).rstrip("1")
             extra_col_letter_end = gspread.utils.rowcol_to_a1(1, old_len).rstrip("1")
             ws.batch_clear([f"{extra_col_letter_start}1:{extra_col_letter_end}1"])
     return ws
@@ -140,23 +157,36 @@ async def _get_worksheet() -> gspread.Worksheet:
     if _worksheet is None:
         async with _worksheet_lock:
             if _worksheet is None:
-                _worksheet = await asyncio.to_thread(_open_worksheet_sync)
+                _worksheet = await asyncio.to_thread(
+                    _open_worksheet_sync, config.GOOGLE_SHEETS_WORKSHEET_NAME, COLUMNS
+                )
     return _worksheet
 
 
-def _get_all_rows_sync(ws: gspread.Worksheet) -> list[dict]:
+async def _get_daily_worksheet() -> gspread.Worksheet:
+    global _daily_worksheet
+    if _daily_worksheet is None:
+        async with _daily_worksheet_lock:
+            if _daily_worksheet is None:
+                _daily_worksheet = await asyncio.to_thread(
+                    _open_worksheet_sync, DAILY_ORDERS_WORKSHEET_NAME, DAILY_COLUMNS
+                )
+    return _daily_worksheet
+
+
+def _get_all_rows_sync(ws: gspread.Worksheet, columns: list = COLUMNS) -> list[dict]:
     values = ws.get_all_values()
     rows = []
     for i, raw in enumerate(values[1:], start=2):  # 1-qator — sarlavha
         if not any(raw):
             continue
-        rows.append(_row_to_dict(raw, i))
+        rows.append(_row_to_dict(raw, i, columns))
     return rows
 
 
 async def get_all_rows() -> list[dict]:
     ws = await _get_worksheet()
-    return await asyncio.to_thread(_get_all_rows_sync, ws)
+    return await asyncio.to_thread(_get_all_rows_sync, ws, COLUMNS)
 
 
 async def get_visible_pending_rows() -> list[dict]:
@@ -204,6 +234,7 @@ async def append_pending_order(
     currency_name: "str | None",
     is_debt: bool,
     payload_json: str,
+    business_day: "str | None" = None,
 ) -> None:
     row = {
         "order_id": order_id,
@@ -219,6 +250,7 @@ async def append_pending_order(
         "currency_name": currency_name or "",
         "is_debt": is_debt,
         "payload_json": payload_json,
+        "business_day": business_day or "",
     }
     ws = await _get_worksheet()
     await asyncio.to_thread(_append_row_sync, ws, _dict_to_row(row))
@@ -253,3 +285,86 @@ async def compare_and_set_status(order_id: str, expected_statuses: set, new_stat
     ws = await _get_worksheet()
     await asyncio.to_thread(_update_row_sync, ws, row["_row_number"], updates)
     return True
+
+
+async def get_syncable_rows_by_business_day() -> dict:
+    """get_syncable_rows() natijasini `business_day` bo'yicha guruhlab
+    qaytaradi (Do'kon'ning kunlik birlashtirish sinxronizatsiyasi uchun),
+    har bir guruh ichida `created_at` bo'yicha xronologik tartiblangan."""
+    rows = await get_syncable_rows()
+    grouped: dict[str, list[dict]] = {}
+    for r in rows:
+        day = r.get("business_day") or ""
+        if not day:
+            continue
+        grouped.setdefault(day, []).append(r)
+    for day_rows in grouped.values():
+        day_rows.sort(key=lambda r: r.get("created_at") or "")
+    return grouped
+
+
+# ---------------------------------------------------------------------------
+# "DailyOrders" jadvali — bir ish kuni uchun bitta umumiy MoySklad
+# zakazi+otgruzkasini kuzatib boradi. Yuqoridagi bilan bir xil naqsh
+# (order_id o'rniga business_day, xuddi shu CAS/xavfsizlik mantig'i).
+# ---------------------------------------------------------------------------
+
+
+def _get_all_daily_rows_sync(ws: gspread.Worksheet) -> list[dict]:
+    return _get_all_rows_sync(ws, DAILY_COLUMNS)
+
+
+async def get_daily_order(business_day: str) -> Optional[dict]:
+    ws = await _get_daily_worksheet()
+    rows = await asyncio.to_thread(_get_all_daily_rows_sync, ws)
+    for r in rows:
+        if r["business_day"] == business_day:
+            return r
+    return None
+
+
+async def create_daily_order(business_day: str) -> None:
+    """Berilgan ish kuni uchun `DailyOrders`da hali qator yo'q bo'lsa,
+    `pending` holatida yangi qator qo'shadi. Chaqiruvchi buni faqat
+    get_daily_order() None qaytarganda chaqirishi kerak — shu orada boshqa
+    parallel jarayon ham qator qo'shib ulgurgan bo'lishi mumkin (kichik poyga
+    oynasi, xuddi boshqa CAS funksiyalaridagi kabi qabul qilingan)."""
+    row = {
+        "business_day": business_day,
+        "status": DAILY_STATUS_PENDING,
+        "created_at": now_iso(),
+        "chain_started_at": "",
+        "last_error": "",
+        "ms_order_id": "",
+        "ms_order_name": "",
+        "ms_demand_id": "",
+        "ms_demand_name": "",
+    }
+    ws = await _get_daily_worksheet()
+    await asyncio.to_thread(_append_row_sync, ws, _dict_to_row(row, DAILY_COLUMNS))
+
+
+def _update_daily_row_sync(ws: gspread.Worksheet, row_number: int, updates: dict) -> None:
+    current = ws.row_values(row_number)
+    current_dict = _row_to_dict(current, row_number, DAILY_COLUMNS)
+    for key, value in updates.items():
+        current_dict[key] = value
+    ws.update(f"A{row_number}", [_dict_to_row(current_dict, DAILY_COLUMNS)], value_input_option="RAW")
+
+
+async def update_daily_order(business_day: str, **updates) -> bool:
+    row = await get_daily_order(business_day)
+    if not row:
+        return False
+    ws = await _get_daily_worksheet()
+    await asyncio.to_thread(_update_daily_row_sync, ws, row["_row_number"], updates)
+    return True
+
+
+async def compare_and_set_daily_status(
+    business_day: str, expected_statuses: set, new_status: str, **extra_updates
+) -> bool:
+    row = await get_daily_order(business_day)
+    if not row or row["status"] not in expected_statuses:
+        return False
+    return await update_daily_order(business_day, status=new_status, **extra_updates)

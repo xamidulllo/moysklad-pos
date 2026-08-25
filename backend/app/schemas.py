@@ -17,9 +17,13 @@ class CartItemIn(BaseModel):
 
 
 class CheckoutRequest(BaseModel):
-    organization_meta: dict
+    # Do'kon rejimida (config.SHOP_ORGANIZATION_ID sozlangan) bular endi
+    # frontend'dan kutilmaydi — backend o'zi config'dagi qattiq belgilangan
+    # tashkilot/kontragentni ishlatadi (main.py/shop_sync.py'ga qarang).
+    # Boshqa (Do'kon bo'lmagan) joylashuv uchun hozirgidek majburiy bo'lib qoladi.
+    organization_meta: Optional[dict] = None
     store_meta: dict
-    agent_meta: dict
+    agent_meta: Optional[dict] = None
     items: list[CartItemIn]
     is_debt: bool = Field(False, description="True bo'lsa — qarzga sotish, to'lov hujjati yaratilmaydi")
     account_meta: Optional[dict] = Field(None, description="entity/organization/{id}/accounts dagi hisob meta'si")
@@ -31,6 +35,14 @@ class CheckoutRequest(BaseModel):
         None, description="To'lov hujjati sanasi/vaqti, masalan '2026-08-01 09:30:00' (bo'sh bo'lsa — hozirgi vaqt)"
     )
     project_meta: Optional[dict] = Field(None, description="entity/project meta obyekti (ixtiyoriy)")
+
+    # Do'kon rejimi: mijoz chet el valyutasida (masalan $) naqd bergan, lekin
+    # sotuv summasidan ko'proq bo'lgani uchun mahalliy valyutada (so'm) qaytim
+    # berilgan holat. Ikkalasi ham to'ldirilsa, shop_sync.py TO'LIQ
+    # cash_given_amount'ni kirim (hisobga bog'langan) sifatida, cash_change_som
+    # ni esa alohida, zakazga bog'lanmagan chiqim sifatida yozadi.
+    cash_given_amount: Optional[float] = Field(None, ge=0, description="Mijoz qo'lga bergan naqd summa (o'z valyutasida)")
+    cash_change_som: Optional[float] = Field(None, ge=0, description="Mijozga qaytarilgan qaytim, so'mda")
 
     # Faqat ko'rsatish uchun (flat) — checkout mantig'ida ISHLATILMAYDI, faqat
     # navbatga qo'yilganda Google Sheets qatoriga yozib qo'yish uchun, shunda

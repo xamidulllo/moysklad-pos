@@ -63,3 +63,46 @@ GOOGLE_SERVICE_ACCOUNT_JSON_B64 = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64", "
 
 GOOGLE_SHEETS_SPREADSHEET_ID = os.getenv("GOOGLE_SHEETS_SPREADSHEET_ID", "").strip() or None
 GOOGLE_SHEETS_WORKSHEET_NAME = os.getenv("GOOGLE_SHEETS_WORKSHEET_NAME", "Orders").strip()
+
+# ---------------------------------------------------------------------------
+# "Do'kon" rejimi — checkout doim BITTA tashkilot/loyiha/kontragentga yozadi
+# (tanlash ekranlari yo'q), kunlik sotuvlar BITTA MoySklad zakazi+otgruzkasiga
+# birlashtiriladi, har bir sotuv esa o'z to'lov hujjatini oladi (shop_sync.py'ga
+# qarang). Sinov paytida SHOP_PROJECT_NAME/SHOP_AGENT_NAME'ni test loyiha/
+# mijozga almashtirib qo'yish mumkin — haqiqiy "Do'kon"/"Do'kon kliyent"ga
+# hech qachon sinov buyurtmasi kirmasligi kerak.
+# ---------------------------------------------------------------------------
+SHOP_ORGANIZATION_ID = os.getenv("SHOP_ORGANIZATION_ID", "").strip() or None
+SHOP_PROJECT_NAME = os.getenv("SHOP_PROJECT_NAME", "Do'kon").strip()
+SHOP_AGENT_NAME = os.getenv("SHOP_AGENT_NAME", "Do'kon kliyent").strip()
+
+# Narx turi ustuvorlik tartibi — ro'yxatdagi birinchi topilgan nom ishlatiladi,
+# hech biri topilmasa MoySklad'ning standart "Цена продажи"siga tushiladi.
+SHOP_PRICE_TYPE_NAMES = [
+    name.strip()
+    for name in os.getenv("SHOP_PRICE_TYPE_NAMES", "Do'kon sotuv").split(",")
+    if name.strip()
+]
+
+# To'lov shoti tanlashda FAQAT shu nomlar ko'rsatiladi (aniq mos kelishi kerak).
+SHOP_ALLOWED_ACCOUNT_NAMES = [
+    name.strip()
+    for name in os.getenv(
+        "SHOP_ALLOWED_ACCOUNT_NAMES",
+        "Donyor aka naxt so'm,Donyor aka karta,Donyor aka naxt,"
+        "Do'kon naxt $,Do'kon naxt so'm,Do'kon ...7789 Mahkamov Fazliddina",
+    ).split(",")
+    if name.strip()
+]
+
+# Ish kuni chegarasi — "HH:MM" formatida, har kuni shu vaqtda eski kun yopilib,
+# yangisi ochiladi (yarim tun emas).
+SHOP_DAY_CUTOFF = os.getenv("SHOP_DAY_CUTOFF", "16:50").strip()
+
+# Chet el valyutasida naqd to'lov + mahalliy valyutada qaytim oqimi uchun —
+# qaytim shu (so'm) shotdan chiqim sifatida yoziladi.
+SHOP_SOM_ACCOUNT_NAME = os.getenv("SHOP_SOM_ACCOUNT_NAME", "Do'kon naxt so'm").strip()
+SHOP_CHANGE_EXPENSE_ARTICLE_NAME = os.getenv("SHOP_CHANGE_EXPENSE_ARTICLE_NAME", "Qaytim").strip()
+
+# Standart dollar kursi (1 USD = ? so'm) — ilova ichida o'zgartirish mumkin.
+DEFAULT_EXCHANGE_RATE = float(os.getenv("DEFAULT_EXCHANGE_RATE", "12000"))
