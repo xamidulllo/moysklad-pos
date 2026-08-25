@@ -763,6 +763,61 @@ async def sync_run(_: None = Depends(require_sync_secret)):
     return await sync_job.run_sync()
 
 
+@app.get("/api/shop/test-config-check")
+async def shop_test_config_check(_: None = Depends(require_sync_secret)):
+    """VAQTINCHALIK, FAQAT O'QISH: config.py'dagi SHOP_* nomlarga mos
+    haqiqiy MoySklad yozuvlari mavjudligini tekshiradi (hech narsa
+    yaratmaydi/o'zgartirmaydi). Tekshiruvdan so'ng olib tashlanadi."""
+    token = await sync_job.get_shared_admin_token()
+
+    projects = await ms_request("GET", "/entity/project", token=token, params={"limit": 100})
+    project_names = [p.get("name") for p in projects.get("rows", [])]
+    project_found = any(n == "Do'kon" for n in project_names)
+
+    price_types_data = await ms_request("GET", "/context/companysettings", token=token)
+    price_type_names = [pt.get("name") for pt in (price_types_data.get("priceTypes") or [])]
+    price_type_found = any(n == "Do'kon sotuv" for n in price_type_names)
+
+    accounts_data = await ms_request(
+        "GET", f"/entity/organization/{SHOP_ORGANIZATION_ID}/accounts", token=token, params={"limit": 100}
+    )
+    account_names = [a.get("bankName") or a.get("accountNumber") for a in accounts_data.get("rows", [])]
+    missing_accounts = [n for n in SHOP_ALLOWED_ACCOUNT_NAMES if n not in account_names]
+
+    agents = await ms_request(
+        "GET", "/entity/counterparty", token=token, params={"filter": "name=Do'kon kliyent", "limit": 5}
+    )
+    agent_matches = [{"id": a["id"], "name": a.get("name")} for a in agents.get("rows", [])]
+
+    stores = await ms_request("GET", "/entity/store", token=token, params={"limit": 100})
+    non_piece_uoms = []
+    for store in stores.get("rows", [])[:1]:
+        store_href = f"{MOYSKLAD_BASE_URL}/entity/store/{store['id']}"
+        stock_data = await ms_request(
+            "GET", "/report/stock/bystore", token=token,
+            params={"filter": f"store={store_href}", "limit": 1000},
+        )
+        for row in stock_data.get("rows", []):
+            if any((e.get("stock") or 0) > 0 for e in row.get("stockByStore", [])):
+                full = await ms_request("GET", row["meta"]["href"], token=token)
+                uom_name = (full.get("uom") or {}).get("name")
+                if uom_name and uom_name.lower() not in ("шт", "шт.", "sht", "sht."):
+                    non_piece_uoms.append({"name": full.get("name"), "uom_name": uom_name})
+                if len(non_piece_uoms) >= 5:
+                    break
+
+    return {
+        "project_do'kon_found": project_found,
+        "all_project_names": project_names,
+        "price_type_do'kon_sotuv_found": price_type_found,
+        "all_price_type_names": price_type_names,
+        "missing_accounts": missing_accounts,
+        "found_account_names": account_names,
+        "agent_do'kon_kliyent_matches": agent_matches,
+        "sample_non_piece_uom_products": non_piece_uoms,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Buyurtmalar tarixi — faqat shu ilova orqali kiritilganlar
 # ---------------------------------------------------------------------------
