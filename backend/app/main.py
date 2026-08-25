@@ -763,6 +763,29 @@ async def sync_run(_: None = Depends(require_sync_secret)):
     return await sync_job.run_sync()
 
 
+@app.get("/api/shop/test-diagnose")
+async def shop_test_diagnose(_: None = Depends(require_sync_secret)):
+    """VAQTINCHALIK: DailyOrders holati va MoySklad'da bugungi kunlik zakaz
+    haqiqatda yaratilganmi-yo'qmi tekshiradi (sinovdan so'ng olib tashlanadi)."""
+    from .shop_day import business_day_key, now_in_shop_tz
+
+    token = await sync_job.get_shared_admin_token()
+    business_day = business_day_key(now_in_shop_tz())
+    daily = await sheets_client.get_daily_order(business_day)
+    orders = await ms_request(
+        "GET", "/entity/customerorder", token=token,
+        params={"filter": f"description~Do'kon kunlik zakaz", "limit": 10, "order": "moment,desc"},
+    )
+    return {
+        "business_day": business_day,
+        "daily_order_row": daily,
+        "matching_ms_orders": [
+            {"id": o["id"], "name": o.get("name"), "moment": o.get("moment"), "description": o.get("description")}
+            for o in orders.get("rows", [])
+        ],
+    }
+
+
 # ---------------------------------------------------------------------------
 # VAQTINCHALIK: shop_sync.py'ni "Test" kontragenti bilan tekshirish uchun —
 # kassir sessiyasiz, faqat sync maxfiy kaliti bilan ishlaydi. Sinovdan so'ng
