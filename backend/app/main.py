@@ -764,6 +764,85 @@ async def sync_run(_: None = Depends(require_sync_secret)):
 
 
 # ---------------------------------------------------------------------------
+# VAQTINCHALIK: shop_sync.py'ni "Test" kontragenti bilan tekshirish uchun —
+# kassir sessiyasiz, faqat sync maxfiy kaliti bilan ishlaydi. Sinovdan so'ng
+# OLIB TASHLANADI.
+# ---------------------------------------------------------------------------
+@app.post("/api/shop/test-seed")
+async def shop_test_seed(_: None = Depends(require_sync_secret)):
+    token = await sync_job.get_shared_admin_token()
+    assortment = await ms_request("GET", "/entity/assortment", token=token, params={"limit": 1})
+    product = assortment["rows"][0]
+
+    accounts_data = await ms_request(
+        "GET", f"/entity/organization/{SHOP_ORGANIZATION_ID}/accounts", token=token, params={"limit": 100}
+    )
+    som_account = next(
+        (a for a in accounts_data["rows"] if (a.get("bankName") or a.get("accountNumber")) == "Do'kon naxt so'm"),
+        None,
+    )
+    usd_account = next(
+        (a for a in accounts_data["rows"] if (a.get("bankName") or a.get("accountNumber")) == "Do'kon naxt $"),
+        None,
+    )
+    if not som_account or not usd_account:
+        return {"error": "Do'kon naxt so'm / Do'kon naxt $ shotlari topilmadi", "found": [
+            a.get("bankName") or a.get("accountNumber") for a in accounts_data["rows"]
+        ]}
+
+    currencies_data = await ms_request("GET", "/entity/currency", token=token, params={"limit": 100})
+    usd_currency = next(
+        (c for c in currencies_data["rows"] if (c.get("isoCode") or "").upper() == "USD"), None
+    )
+    if not usd_currency:
+        return {"error": "USD valyutasi topilmadi"}
+
+    business_day = business_day_key(now_in_shop_tz())
+    seeded = []
+
+    # 1) Oddiy so'm sotuv, "Do'kon naxt so'm" orqali to'langan.
+    payload1 = CheckoutRequest(
+        store_meta={"href": product["meta"]["href"]},  # store shart emas shop_sync uchun, lekin schema talab qiladi
+        items=[{"assortment_meta": product["meta"], "quantity": 1, "price": 1000, "id": product["id"], "name": product.get("name")}],
+        is_debt=False,
+        account_meta=som_account["meta"],
+        document_type="cashin",
+    )
+    order_id1 = str(uuid4())
+    await sheets_client.append_pending_order(
+        order_id=order_id1, cashier_name="test-seed", store_id=None, store_name=None,
+        agent_name="Test", items_summary=f"{product.get('name')} x1", total_sum=1000,
+        currency_name=None, is_debt=False, payload_json=payload1.model_dump_json(),
+        business_day=business_day,
+    )
+    seeded.append(order_id1)
+
+    # 2) $ naqd + so'm qaytim oqimi: tovar $0.17 (2000 so'm ekvivalenti, kurs
+    # 12000), mijoz $1 beradi, 1000 so'm qaytim oladi.
+    payload2 = CheckoutRequest(
+        store_meta={"href": product["meta"]["href"]},
+        items=[{"assortment_meta": product["meta"], "quantity": 1, "price": 0.17, "id": product["id"], "name": product.get("name")}],
+        is_debt=False,
+        account_meta=usd_account["meta"],
+        document_type="cashin",
+        currency_meta=usd_currency["meta"],
+        exchange_rate=12000,
+        cash_given_amount=1,
+        cash_change_som=1000,
+    )
+    order_id2 = str(uuid4())
+    await sheets_client.append_pending_order(
+        order_id=order_id2, cashier_name="test-seed", store_id=None, store_name=None,
+        agent_name="Test", items_summary=f"{product.get('name')} x1 ($ + qaytim)", total_sum=2000,
+        currency_name=None, is_debt=False, payload_json=payload2.model_dump_json(),
+        business_day=business_day,
+    )
+    seeded.append(order_id2)
+
+    return {"seeded_order_ids": seeded, "business_day": business_day, "product": product.get("name")}
+
+
+# ---------------------------------------------------------------------------
 # Buyurtmalar tarixi — faqat shu ilova orqali kiritilganlar
 # ---------------------------------------------------------------------------
 
