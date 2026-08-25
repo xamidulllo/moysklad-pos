@@ -840,10 +840,24 @@ async def shop_test_reset(
 @app.post("/api/shop/test-seed")
 async def shop_test_seed(_: None = Depends(require_sync_secret)):
     token = await sync_job.get_shared_admin_token()
-    assortment = await ms_request("GET", "/entity/assortment", token=token, params={"limit": 1})
-    product = assortment["rows"][0]
     stores_data = await ms_request("GET", "/entity/store", token=token, params={"limit": 1})
     store = stores_data["rows"][0]
+
+    # Otgruzka uchun tanlangan ombordagi HAQIQIY qoldig'i bor tovar kerak —
+    # tasodifiy birinchi tovarda qoldiq bo'lmasligi mumkin (real sinovda
+    # aynan shu sabab bilan otgruzka rad etilgan edi).
+    store_href = f"{MOYSKLAD_BASE_URL}/entity/store/{store['id']}"
+    stock_data = await ms_request(
+        "GET", "/report/stock/bystore", token=token,
+        params={"filter": f"store={store_href}", "limit": 100},
+    )
+    in_stock_row = next(
+        (r for r in stock_data["rows"] if any((e.get("stock") or 0) > 0 for e in r.get("stockByStore", []))),
+        None,
+    )
+    if not in_stock_row:
+        return {"error": f"'{store.get('name')}' omborida qoldig'i bor tovar topilmadi"}
+    product = await ms_request("GET", in_stock_row["meta"]["href"], token=token)
 
     accounts_data = await ms_request(
         "GET", f"/entity/organization/{SHOP_ORGANIZATION_ID}/accounts", token=token, params={"limit": 100}
