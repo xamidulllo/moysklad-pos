@@ -787,10 +787,16 @@ async def shop_test_diagnose(_: None = Depends(require_sync_secret)):
 
 
 @app.post("/api/shop/test-reset")
-async def shop_test_reset(ms_order_id: str = Query(None), _: None = Depends(require_sync_secret)):
+async def shop_test_reset(
+    ms_order_id: str = Query(None),
+    cancel_pending_rows: bool = Query(False),
+    _: None = Depends(require_sync_secret),
+):
     """VAQTINCHALIK: sinov paytida "osilib qolgan" (orphaned) zakazni o'chirib,
     DailyOrders qatorini qaytadan "pending" holatiga tushiradi, keyingi sync
-    urinishi toza boshlansin uchun (sinovdan so'ng olib tashlanadi)."""
+    urinishi toza boshlansin uchun (sinovdan so'ng olib tashlanadi).
+    cancel_pending_rows=true bo'lsa, bugungi ish kunidagi eski (masalan buzilgan
+    payload_json'li) sinov qatorlarini ham "cancelled" qilib belgilaydi."""
     from .shop_day import business_day_key, now_in_shop_tz
 
     token = await sync_job.get_shared_admin_token()
@@ -800,6 +806,17 @@ async def shop_test_reset(ms_order_id: str = Query(None), _: None = Depends(requ
         deleted = ms_order_id
 
     business_day = business_day_key(now_in_shop_tz())
+
+    cancelled_rows = []
+    if cancel_pending_rows:
+        all_rows = await sheets_client.get_all_rows()
+        for row in all_rows:
+            if row.get("business_day") == business_day and row["status"] in (
+                sheets_client.STATUS_PENDING, sheets_client.STATUS_FAILED
+            ):
+                await sheets_client.update_row(row["order_id"], status=sheets_client.STATUS_CANCELLED)
+                cancelled_rows.append(row["order_id"])
+
     await sheets_client.update_daily_order(
         business_day,
         status=sheets_client.DAILY_STATUS_PENDING,
@@ -807,7 +824,12 @@ async def shop_test_reset(ms_order_id: str = Query(None), _: None = Depends(requ
         last_error="",
         ms_order_id="", ms_order_name="", ms_demand_id="", ms_demand_name="",
     )
-    return {"deleted_ms_order_id": deleted, "business_day": business_day, "reset": True}
+    return {
+        "deleted_ms_order_id": deleted,
+        "business_day": business_day,
+        "cancelled_rows": cancelled_rows,
+        "reset": True,
+    }
 
 
 # ---------------------------------------------------------------------------
