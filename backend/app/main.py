@@ -763,29 +763,6 @@ async def sync_run(_: None = Depends(require_sync_secret)):
     return await sync_job.run_sync()
 
 
-@app.post("/api/shop/test-cleanup")
-async def shop_test_cleanup(_: None = Depends(require_sync_secret)):
-    """VAQTINCHALIK: "Test" mijoziga yaratilgan sinov hujjatlarini o'chiradi
-    (foydalanuvchi tasdiqlagan). Ishlatilgandan so'ng olib tashlanadi."""
-    token = await sync_job.get_shared_admin_token()
-    deleted = []
-    targets = [
-        ("cashin", "0eedcab3-a06d-11f1-0a80-1fb5002c0f07"),
-        ("cashin", "0f96a5de-a06e-11f1-0a80-104c002dc15b"),
-        ("cashout", "0fe59ac6-a06e-11f1-0a80-160b002c0548"),
-        ("demand", "bd996b7d-a069-11f1-0a80-0910002ceb9e"),
-        ("customerorder", "bd6c8b98-a069-11f1-0a80-178d002b486a"),
-    ]
-    errors = []
-    for entity, doc_id in targets:
-        try:
-            await ms_request("DELETE", f"/entity/{entity}/{doc_id}", token=token)
-            deleted.append(f"{entity}/{doc_id}")
-        except HTTPException as exc:
-            errors.append({"entity": entity, "id": doc_id, "error": str(exc.detail)})
-    return {"deleted": deleted, "errors": errors}
-
-
 # ---------------------------------------------------------------------------
 # Buyurtmalar tarixi — faqat shu ilova orqali kiritilganlar
 # ---------------------------------------------------------------------------
