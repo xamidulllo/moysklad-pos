@@ -786,6 +786,14 @@ async def shop_test_diagnose(_: None = Depends(require_sync_secret)):
             "shipped_sum": full_order.get("shippedSum"),
             "payed_sum": full_order.get("payedSum"),
         })
+    cashouts = await ms_request(
+        "GET", "/entity/cashout", token=token, params={"limit": 5, "order": "moment,desc", "expand": "expenseItem"}
+    )
+    recent_cashouts = [
+        {"id": c["id"], "name": c.get("name"), "sum": c.get("sum"), "expense_item": (c.get("expenseItem") or {}).get("name")}
+        for c in cashouts.get("rows", [])
+    ]
+
     all_rows = await sheets_client.get_all_rows()
     today_rows = [
         {
@@ -800,6 +808,7 @@ async def shop_test_diagnose(_: None = Depends(require_sync_secret)):
         "daily_order_row": daily,
         "matching_ms_orders": order_summaries,
         "today_sheet_rows": today_rows,
+        "recent_cashouts": recent_cashouts,
     }
 
 
