@@ -786,6 +786,30 @@ async def shop_test_diagnose(_: None = Depends(require_sync_secret)):
     }
 
 
+@app.post("/api/shop/test-reset")
+async def shop_test_reset(ms_order_id: str = Query(None), _: None = Depends(require_sync_secret)):
+    """VAQTINCHALIK: sinov paytida "osilib qolgan" (orphaned) zakazni o'chirib,
+    DailyOrders qatorini qaytadan "pending" holatiga tushiradi, keyingi sync
+    urinishi toza boshlansin uchun (sinovdan so'ng olib tashlanadi)."""
+    from .shop_day import business_day_key, now_in_shop_tz
+
+    token = await sync_job.get_shared_admin_token()
+    deleted = None
+    if ms_order_id:
+        await ms_request("DELETE", f"/entity/customerorder/{ms_order_id}", token=token)
+        deleted = ms_order_id
+
+    business_day = business_day_key(now_in_shop_tz())
+    await sheets_client.update_daily_order(
+        business_day,
+        status=sheets_client.DAILY_STATUS_PENDING,
+        chain_started_at="",
+        last_error="",
+        ms_order_id="", ms_order_name="", ms_demand_id="", ms_demand_name="",
+    )
+    return {"deleted_ms_order_id": deleted, "business_day": business_day, "reset": True}
+
+
 # ---------------------------------------------------------------------------
 # VAQTINCHALIK: shop_sync.py'ni "Test" kontragenti bilan tekshirish uchun —
 # kassir sessiyasiz, faqat sync maxfiy kaliti bilan ishlaydi. Sinovdan so'ng

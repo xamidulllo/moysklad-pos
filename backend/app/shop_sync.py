@@ -31,6 +31,7 @@ sync_job.py'dagi kabi).
 import json
 import logging
 
+import httpx
 from fastapi import HTTPException
 
 from . import sheets_client, stock_cache
@@ -56,6 +57,22 @@ from .utils import _to_minor_units
 logger = logging.getLogger("moysklad_pos.shop_sync")
 
 _running = False
+
+# MoySklad ba'zan bitta hujjat yaratish so'roviga standart (25s) vaqtdan
+# ko'proq javob berishi real productionda tasdiqlangan — kunlik zakaz/otgruzka
+# yaratish fonda ketadi (kassirni kutdirmaydi), shuning uchun bu ikkalasi
+# uchun ancha kattaroq timeout ishlatiladi.
+_DOC_CREATE_TIMEOUT_SECONDS = 45.0
+
+
+class DailyOrderAmbiguousError(Exception):
+    """Zakaz yoki otgruzka yaratish so'rovi MoySklad'ga yetib borgan-bormagani
+    (tarmoq xatosi/vaqt tugashi sabab) ANIQ EMAS — hujjat aslida yaratilgan
+    bo'lishi ham mumkin. Bunday holatda avtomatik qayta urinish (dublikat
+    yaratib qo'yishi mumkin) VA avtomatik rollback (haqiqatda yaratilgan
+    hujjatni noto'g'ri o'chirib yuborishi mumkin) ikkalasi ham xavfli —
+    shuning uchun bu alohida xato turi bilan ko'tariladi, chaqiruvchi buni
+    "needs_manual_check" deb belgilashi kerak."""
 
 
 def _org_meta() -> dict:
@@ -179,7 +196,18 @@ async def _create_daily_order_and_demand(business_day: str, rows: list, token: s
     if required_attrs:
         order_body["attributes"] = required_attrs
 
-    order = await ms_request("POST", "/entity/customerorder", token=token, json=order_body)
+    try:
+        order = await ms_request(
+            "POST", "/entity/customerorder", token=token, json=order_body, timeout=_DOC_CREATE_TIMEOUT_SECONDS
+        )
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        # Zakaz haqiqatda yaratilgan yoki yo'qmi — aniq emas (real productionda
+        # tasdiqlangan: MoySklad ba'zan hujjatni yaratib ulguradi, lekin javob
+        # kelmaydi). Avtomatik qayta urinish DUBLIKAT zakaz yaratib qo'yishi
+        # mumkin, shuning uchun bu yerda taqiqlanadi — qo'lda tekshirish kerak.
+        raise DailyOrderAmbiguousError(
+            f"Kunlik zakaz yaratishda tarmoq xatosi (holat noaniq): {exc}"
+        ) from exc
 
     demand_body = {
         "organization": {"meta": org_meta},
@@ -191,14 +219,35 @@ async def _create_daily_order_and_demand(business_day: str, rows: list, token: s
     if project_meta:
         demand_body["project"] = {"meta": project_meta}
     try:
-        demand = await ms_request("POST", "/entity/demand", token=token, json=demand_body)
+        demand = await ms_request(
+            "POST", "/entity/demand", token=token, json=demand_body, timeout=_DOC_CREATE_TIMEOUT_SECONDS
+        )
+    except (httpx.TimeoutException, httpx.TransportError) as exc:
+        # Otgruzka haqiqatda yaratilgan yoki yo'qmi — aniq emas. Bu holatda
+        # zakazni AVTOMATIK o'chirib bo'lmaydi: agar otgruzka aslida
+        # yaratilgan bo'lsa, unga bog'langan zakazni o'chirish MoySklad'da
+        # "otgruzka bor, zakazi yo'q" kabi buzilgan holat qoldirardi. Shu
+        # sabab hech qanday rollback urinilmasdan to'g'ridan-to'g'ri qo'lda
+        # tekshirishga yuboriladi (real productionda aynan shu holat
+        # kuzatilgan: zakaz #02340 yaratildi, otgruzka so'rovi vaqt tugashi
+        # bilan uzildi).
+        raise DailyOrderAmbiguousError(
+            f"Kunlik otgruzka yaratishda tarmoq xatosi (holat noaniq, zakaz #{order.get('name')}): {exc}"
+        ) from exc
     except HTTPException:
+        # MoySklad'ning O'ZI aniq rad etdi (tarmoq xatosi emas) — zakaz
+        # haqiqatda yaratilgani aniq, endi hech narsaga bog'lanmagan holda
+        # qolmasligi uchun xavfsiz orqaga qaytariladi.
         try:
             await ms_request("DELETE", f"/entity/customerorder/{order['id']}", token=token)
         except HTTPException as rollback_err:
             raise RollbackFailedError(
                 f"Kunlik otgruzka yaratilmadi va zakaz #{order.get('name')}ni orqaga qaytarib bo'lmadi: {rollback_err.detail}"
             ) from rollback_err
+        except (httpx.TimeoutException, httpx.TransportError) as rollback_exc:
+            raise DailyOrderAmbiguousError(
+                f"Otgruzka rad etildi va zakaz #{order.get('name')}ni orqaga qaytarishda tarmoq xatosi (holat noaniq): {rollback_exc}"
+            ) from rollback_exc
         raise
 
     await sheets_client.update_daily_order(
@@ -264,7 +313,9 @@ async def _sync_row_payment(row: dict, daily_order: dict, token: str) -> str:
             if payload.payment_moment:
                 payment_body["moment"] = payload.payment_moment
             endpoint = "/entity/cashin" if payload.document_type == "cashin" else "/entity/paymentin"
-            payment = await ms_request("POST", endpoint, token=token, json=payment_body)
+            payment = await ms_request(
+                "POST", endpoint, token=token, json=payment_body, timeout=_DOC_CREATE_TIMEOUT_SECONDS
+            )
             payment_ids = {"ms_payment_id": payment["id"], "ms_payment_name": payment.get("name") or ""}
 
             if payload.cash_change_som:
@@ -279,7 +330,9 @@ async def _sync_row_payment(row: dict, daily_order: dict, token: str) -> str:
                 }
                 if article_meta:
                     cashout_body["expenseItem"] = {"meta": article_meta}
-                await ms_request("POST", "/entity/cashout", token=token, json=cashout_body)
+                await ms_request(
+                    "POST", "/entity/cashout", token=token, json=cashout_body, timeout=_DOC_CREATE_TIMEOUT_SECONDS
+                )
         else:
             payment_body = {
                 "organization": {"meta": _org_meta()},
@@ -292,7 +345,9 @@ async def _sync_row_payment(row: dict, daily_order: dict, token: str) -> str:
             if payload.payment_moment:
                 payment_body["moment"] = payload.payment_moment
             endpoint = "/entity/cashin" if payload.document_type == "cashin" else "/entity/paymentin"
-            payment = await ms_request("POST", endpoint, token=token, json=payment_body)
+            payment = await ms_request(
+                "POST", endpoint, token=token, json=payment_body, timeout=_DOC_CREATE_TIMEOUT_SECONDS
+            )
             payment_ids = {"ms_payment_id": payment["id"], "ms_payment_name": payment.get("name") or ""}
     except HTTPException as exc:
         await sheets_client.update_row(
@@ -344,7 +399,7 @@ async def _sync_one_business_day(business_day: str, rows: list, token: str) -> d
             await sheets_client.update_daily_order(business_day, chain_started_at=sheets_client.now_iso())
             try:
                 await _create_daily_order_and_demand(business_day, rows, token)
-            except RollbackFailedError as exc:
+            except (RollbackFailedError, DailyOrderAmbiguousError) as exc:
                 await sheets_client.update_daily_order(
                     business_day, status=sheets_client.DAILY_STATUS_NEEDS_MANUAL_CHECK, last_error=str(exc)
                 )
