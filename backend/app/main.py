@@ -804,10 +804,20 @@ async def shop_test_complete(ms_order_id: str = Query(...), _: None = Depends(re
 
     token = await sync_job.get_shared_admin_token()
     order = await ms_request("GET", f"/entity/customerorder/{ms_order_id}", token=token)
+    order_href = order["meta"]["href"]
+    # Boshqa (haqiqiy biznes) otgruzkalar bilan aralashib ketmasligi uchun —
+    # "eng oxirgi otgruzka" emas, aynan shu zakazga ("customerOrder") bog'langanini
+    # topamiz (API filter="customerOrder=..." ishlamagani sabab qo'lda tekshiriladi).
     demands = await ms_request(
-        "GET", "/entity/demand", token=token, params={"limit": 5, "order": "moment,desc"}
+        "GET", "/entity/demand", token=token,
+        params={"expand": "customerOrder", "limit": 20, "order": "moment,desc"},
     )
-    demand = demands["rows"][0]
+    demand = next(
+        (d for d in demands["rows"] if ((d.get("customerOrder") or {}).get("meta") or {}).get("href") == order_href),
+        None,
+    )
+    if not demand:
+        return {"error": f"Zakaz #{order.get('name')}ga bog'langan otgruzka topilmadi"}
 
     business_day = business_day_key(now_in_shop_tz())
     await sheets_client.update_daily_order(
