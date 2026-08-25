@@ -785,7 +785,7 @@ async def shop_test_config_check(_: None = Depends(require_sync_secret)):
     missing_accounts = [n for n in SHOP_ALLOWED_ACCOUNT_NAMES if n not in account_names]
 
     agents = await ms_request(
-        "GET", "/entity/counterparty", token=token, params={"filter": "name=Do'kon kliyent", "limit": 5}
+        "GET", "/entity/counterparty", token=token, params={"filter": "name~Do'kon", "limit": 20}
     )
     agent_matches = [{"id": a["id"], "name": a.get("name")} for a in agents.get("rows", [])]
 
