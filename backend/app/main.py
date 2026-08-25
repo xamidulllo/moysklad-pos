@@ -797,14 +797,16 @@ async def shop_test_config_check(_: None = Depends(require_sync_secret)):
             "GET", "/report/stock/bystore", token=token,
             params={"filter": f"store={store_href}", "limit": 50}, timeout=50.0,
         )
+        checked = 0
         for row in stock_data.get("rows", []):
+            if checked >= 10 or len(non_piece_uoms) >= 5:
+                break
             if any((e.get("stock") or 0) > 0 for e in row.get("stockByStore", [])):
-                full = await ms_request("GET", row["meta"]["href"], token=token)
+                checked += 1
+                full = await ms_request("GET", row["meta"]["href"], token=token, timeout=30.0)
                 uom_name = (full.get("uom") or {}).get("name")
                 if uom_name and uom_name.lower() not in ("шт", "шт.", "sht", "sht."):
                     non_piece_uoms.append({"name": full.get("name"), "uom_name": uom_name})
-                if len(non_piece_uoms) >= 5:
-                    break
 
     return {
         "project_do'kon_found": project_found,
