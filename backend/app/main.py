@@ -793,6 +793,37 @@ async def shop_test_diagnose(_: None = Depends(require_sync_secret)):
     }
 
 
+@app.post("/api/shop/test-complete")
+async def shop_test_complete(ms_order_id: str = Query(...), _: None = Depends(require_sync_secret)):
+    """VAQTINCHALIK: MoySklad'da zakaz+otgruzka ikkalasi ham haqiqatda
+    yaratilgan (shippedSum orqali tasdiqlangan), lekin javob vaqt tugashi
+    bilan uzilgani sabab DailyOrders "needs_manual_check"da qolgan holatni
+    qo'lda "synced"ga o'tkazadi — shunda qatorlarning o'z to'lovlari
+    tekshirilishi davom etishi mumkin (sinovdan so'ng olib tashlanadi)."""
+    from .shop_day import business_day_key, now_in_shop_tz
+
+    token = await sync_job.get_shared_admin_token()
+    order = await ms_request("GET", f"/entity/customerorder/{ms_order_id}", token=token)
+    demands = await ms_request(
+        "GET", "/entity/demand", token=token, params={"limit": 5, "order": "moment,desc"}
+    )
+    demand = demands["rows"][0]
+
+    business_day = business_day_key(now_in_shop_tz())
+    await sheets_client.update_daily_order(
+        business_day,
+        status=sheets_client.DAILY_STATUS_SYNCED,
+        ms_order_id=order["id"], ms_order_name=order.get("name") or "",
+        ms_demand_id=demand["id"], ms_demand_name=demand.get("name") or "",
+    )
+    return {
+        "business_day": business_day,
+        "order_name": order.get("name"),
+        "demand_name": demand.get("name"),
+        "demand_sum": demand.get("sum"),
+    }
+
+
 @app.post("/api/shop/test-reset")
 async def shop_test_reset(
     ms_order_id: str = Query(None),
