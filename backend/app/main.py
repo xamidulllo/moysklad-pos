@@ -786,10 +786,20 @@ async def shop_test_diagnose(_: None = Depends(require_sync_secret)):
             "shipped_sum": full_order.get("shippedSum"),
             "payed_sum": full_order.get("payedSum"),
         })
+    all_rows = await sheets_client.get_all_rows()
+    today_rows = [
+        {
+            "order_id": r["order_id"], "status": r["status"], "last_error": r.get("last_error"),
+            "ms_payment_id": r.get("ms_payment_id"), "ms_payment_name": r.get("ms_payment_name"),
+        }
+        for r in all_rows
+        if r.get("business_day") == business_day
+    ]
     return {
         "business_day": business_day,
         "daily_order_row": daily,
         "matching_ms_orders": order_summaries,
+        "today_sheet_rows": today_rows,
     }
 
 
