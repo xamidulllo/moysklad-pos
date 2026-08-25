@@ -300,10 +300,20 @@ async def _sync_row_payment(row: dict, daily_order: dict, token: str) -> str:
             # bilan tasdiqlangan 4-qaror): TO'LIQ berilgan summa daromad
             # sifatida, zakazga TO'LIQ bog'langan holda yoziladi; qaytim esa
             # ALOHIDA, zakazga bog'lanmagan chiqim hujjati sifatida.
-            # MUHIM: bu aniq shu ko'rinishda hali LIVE MoySklad'da
-            # tekshirilmagan — productionga chiqarishdan oldin SINOV loyiha
-            # bilan tasdiqlanishi kerak (reja faylidagi tekshirish bo'limi).
-            given_minor = _to_minor_units(payload.cash_given_amount)
+            # MUHIM (real MoySklad API'da tekshirilgan): to'lov hujjati
+            # BAZAVIY valyutadagi (so'm) umumiy kunlik zakazga bog'lanadi —
+            # MoySklad "rate.value != 1" bilan chet el valyutasidagi to'lovni
+            # bazaviy valyutadagi zakazga bog'lashni RAD ETADI (xato 3007,
+            # "Нельзя задать курс валюты учета, отличный от 1"). Shu sabab
+            # to'lov ham SO'MDA (berilgan summa * exchange_rate) yoziladi —
+            # jismoniy $ qabul qilingani payload.cash_given_amount'da o'z
+            # holicha saqlanadi, faqat MoySklad hujjatining o'zi so'mda.
+            given_in_som = (
+                payload.cash_given_amount * payload.exchange_rate
+                if payload.currency_meta and payload.exchange_rate
+                else payload.cash_given_amount
+            )
+            given_minor = _to_minor_units(given_in_som)
             payment_body = {
                 "organization": {"meta": _org_meta()},
                 "agent": {"meta": agent_meta},
@@ -312,11 +322,6 @@ async def _sync_row_payment(row: dict, daily_order: dict, token: str) -> str:
                 "organizationAccount": {"meta": payload.account_meta},
                 "operations": [{"meta": order_meta, "linkedSum": given_minor}],
             }
-            if payload.currency_meta and payload.exchange_rate:
-                payment_body["rate"] = {
-                    "value": 1 / payload.exchange_rate,
-                    "currency": {"meta": payload.currency_meta},
-                }
             if payload.payment_moment:
                 payment_body["moment"] = payload.payment_moment
             endpoint = "/entity/cashin" if payload.document_type == "cashin" else "/entity/paymentin"
