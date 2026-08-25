@@ -776,13 +776,22 @@ async def shop_test_diagnose(_: None = Depends(require_sync_secret)):
         "GET", "/entity/customerorder", token=token,
         params={"filter": f"description~Do'kon kunlik zakaz", "limit": 10, "order": "moment,desc"},
     )
+    order_summaries = []
+    for o in orders.get("rows", []):
+        order_href = o["meta"]["href"]
+        demands = await ms_request(
+            "GET", "/entity/demand", token=token,
+            params={"filter": f"customerOrder={order_href}", "limit": 10},
+        )
+        order_summaries.append({
+            "id": o["id"], "name": o.get("name"), "moment": o.get("moment"),
+            "description": o.get("description"),
+            "linked_demands": [{"id": d["id"], "name": d.get("name")} for d in demands.get("rows", [])],
+        })
     return {
         "business_day": business_day,
         "daily_order_row": daily,
-        "matching_ms_orders": [
-            {"id": o["id"], "name": o.get("name"), "moment": o.get("moment"), "description": o.get("description")}
-            for o in orders.get("rows", [])
-        ],
+        "matching_ms_orders": order_summaries,
     }
 
 
