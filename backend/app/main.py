@@ -795,7 +795,7 @@ async def shop_test_config_check(_: None = Depends(require_sync_secret)):
         store_href = f"{MOYSKLAD_BASE_URL}/entity/store/{store['id']}"
         stock_data = await ms_request(
             "GET", "/report/stock/bystore", token=token,
-            params={"filter": f"store={store_href}", "limit": 1000},
+            params={"filter": f"store={store_href}", "limit": 50}, timeout=50.0,
         )
         for row in stock_data.get("rows", []):
             if any((e.get("stock") or 0) > 0 for e in row.get("stockByStore", [])):
