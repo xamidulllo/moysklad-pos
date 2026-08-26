@@ -49,7 +49,7 @@ from .config import (
     SHOP_PROJECT_NAME,
     SHOP_SOM_ACCOUNT_NAME,
 )
-from .moysklad_client import ms_request
+from .moysklad_client import ms_request, ms_request_resilient
 from .schemas import CheckoutRequest
 from .sync_job import get_shared_admin_token
 from .utils import _to_minor_units
@@ -85,7 +85,7 @@ def _org_meta() -> dict:
 
 async def _get_shop_project_meta(token: str) -> "dict | None":
     async def loader():
-        data = await ms_request("GET", "/entity/project", token=token, params={"limit": 100})
+        data = await ms_request_resilient("GET", "/entity/project", token=token, params={"limit": 100})
         match = next((r for r in data.get("rows", []) if r.get("name") == SHOP_PROJECT_NAME), None)
         return {"meta": match["meta"] if match else None}
 
@@ -95,7 +95,7 @@ async def _get_shop_project_meta(token: str) -> "dict | None":
 
 async def _get_shop_agent_meta(token: str) -> dict:
     async def loader():
-        data = await ms_request(
+        data = await ms_request_resilient(
             "GET", "/entity/counterparty", token=token,
             params={"filter": f"name={SHOP_AGENT_NAME}", "limit": 1},
         )
@@ -113,7 +113,7 @@ async def _get_account_meta_by_name(token: str, account_name: str) -> "dict | No
     (qaytim uchun chiqim hujjatida ishlatiladi)."""
 
     async def loader():
-        data = await ms_request(
+        data = await ms_request_resilient(
             "GET", f"/entity/organization/{SHOP_ORGANIZATION_ID}/accounts", token=token, params={"limit": 100}
         )
         for row in data.get("rows", []):
@@ -131,7 +131,7 @@ async def _get_change_expense_article_meta(token: str) -> "dict | None":
     hisobotda aniq ko'rinishi uchun. Topilmasa yaratiladi."""
 
     async def loader():
-        data = await ms_request("GET", "/entity/expenseitem", token=token, params={"limit": 100})
+        data = await ms_request_resilient("GET", "/entity/expenseitem", token=token, params={"limit": 100})
         existing = next(
             (r for r in data.get("rows", []) if r.get("name") == SHOP_CHANGE_EXPENSE_ARTICLE_NAME), None
         )

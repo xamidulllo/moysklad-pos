@@ -12,7 +12,7 @@ edi), shuning uchun bu mantiq mustaqil modulda turadi.
 from fastapi import HTTPException
 
 from .cache import _cached
-from .moysklad_client import ms_request
+from .moysklad_client import ms_request, ms_request_resilient
 from .schemas import CheckoutRequest
 from .utils import _id_from_href, _to_minor_units
 
@@ -43,7 +43,7 @@ async def _get_default_currency_id(token: str) -> "str | None":
     """
 
     async def loader():
-        data = await ms_request("GET", "/entity/currency", token=token, params={"limit": 100})
+        data = await ms_request_resilient("GET", "/entity/currency", token=token, params={"limit": 100})
         default_row = next((r for r in data.get("rows", []) if r.get("default")), None)
         return {"id": default_row["id"] if default_row else None}
 
@@ -59,7 +59,7 @@ async def _get_pos_sales_channel_meta(token: str) -> dict:
     tekshirilgan — "type": "ECOMMERCE" bilan)."""
 
     async def loader():
-        data = await ms_request("GET", "/entity/saleschannel", token=token, params={"limit": 100})
+        data = await ms_request_resilient("GET", "/entity/saleschannel", token=token, params={"limit": 100})
         existing = next(
             (r for r in data.get("rows", []) if r.get("name") == _POS_SALES_CHANNEL_NAME), None
         )
@@ -97,7 +97,7 @@ async def _get_required_order_attributes(token: str) -> list:
 
     async def loader():
         try:
-            data = await ms_request(
+            data = await ms_request_resilient(
                 "GET", "/entity/customerorder/metadata/attributes", token=token, params={"limit": 1000}
             )
         except HTTPException:

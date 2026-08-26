@@ -60,7 +60,7 @@ from .config import (
 )
 from .shop_day import business_day_key, now_in_shop_tz
 from .moysklad_client import close_client as close_ms_client
-from .moysklad_client import exchange_credentials_for_token, ms_request
+from .moysklad_client import exchange_credentials_for_token, ms_request, ms_request_resilient
 from .schemas import CheckoutRequest, CounterpartyCreate, LoginRequest, PendingOrderItemsEdit
 from .utils import _id_from_href
 
@@ -165,7 +165,7 @@ async def _get_default_price_type_id(token: str) -> "str | None":
     """
 
     async def loader():
-        data = await ms_request("GET", "/context/companysettings", token=token)
+        data = await ms_request_resilient("GET", "/context/companysettings", token=token)
         price_types = data.get("priceTypes") or []
         for name in SHOP_PRICE_TYPE_NAMES:
             match = next((pt for pt in price_types if pt.get("name") == name), None)
@@ -193,7 +193,7 @@ async def _get_account_id(token: str) -> str:
     bir-birining tovar/mijoz ro'yxatini ko'rib qolmasligi kerak."""
 
     async def loader():
-        employee = await ms_request("GET", "/context/employee", token=token)
+        employee = await ms_request_resilient("GET", "/context/employee", token=token)
         return {"account_id": employee.get("accountId")}
 
     result = await _cached("account_id", token, loader)
@@ -357,7 +357,7 @@ async def _get_stock_by_store(token: str, store_id: str) -> "dict[str, float]":
         stock_map: dict[str, float] = {}
         offset = 0
         while True:
-            data = await ms_request(
+            data = await ms_request_resilient(
                 "GET",
                 "/report/stock/bystore",
                 token=token,
@@ -461,7 +461,7 @@ async def get_projects(token: str = Depends(get_current_token)):
 
     async def loader():
         try:
-            data = await ms_request("GET", "/entity/project", token=token, params={"limit": 100})
+            data = await ms_request_resilient("GET", "/entity/project", token=token, params={"limit": 100})
         except HTTPException:
             # Ba'zi MoySklad tariflarida bu funksiya cheklangan bo'lishi mumkin —
             # bunday holda checkout ekranini butunlay to'xtatmasdan, shunchaki
@@ -494,11 +494,11 @@ async def get_accounts(token: str = Depends(get_current_token)):
 
     async def loader():
         default_currency_id = await _get_default_currency_id(token)
-        orgs = await ms_request("GET", "/entity/organization", token=token, params={"limit": 100})
+        orgs = await ms_request_resilient("GET", "/entity/organization", token=token, params={"limit": 100})
         items = []
         for org in orgs.get("rows", []):
             org_id = org["id"]
-            accounts = await ms_request(
+            accounts = await ms_request_resilient(
                 "GET", f"/entity/organization/{org_id}/accounts", token=token, params={"limit": 100}
             )
             for row in accounts.get("rows", []):
@@ -536,8 +536,8 @@ async def get_context(token: str = Depends(get_current_token)):
     """Buyurtma/otgruzka uchun majburiy bo'lgan tashkilot va ombor ro'yxatlarini qaytaradi."""
 
     async def loader():
-        orgs = await ms_request("GET", "/entity/organization", token=token, params={"limit": 100})
-        stores = await ms_request("GET", "/entity/store", token=token, params={"limit": 100})
+        orgs = await ms_request_resilient("GET", "/entity/organization", token=token, params={"limit": 100})
+        stores = await ms_request_resilient("GET", "/entity/store", token=token, params={"limit": 100})
         return {
             "organizations": [
                 {"id": r["id"], "meta": r["meta"], "name": r["name"]} for r in orgs.get("rows", [])
@@ -557,7 +557,7 @@ async def get_currencies(token: str = Depends(get_current_token)):
     Frontend shu ro'yxat asosida har bir tovar/kurs uchun valyuta tanlovlarini quradi."""
 
     async def loader():
-        data = await ms_request("GET", "/entity/currency", token=token, params={"limit": 100})
+        data = await ms_request_resilient("GET", "/entity/currency", token=token, params={"limit": 100})
         return {
             "items": [
                 {

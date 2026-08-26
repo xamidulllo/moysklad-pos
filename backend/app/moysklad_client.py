@@ -12,12 +12,16 @@ so'rovni ~0.3s o'rniga ~1.7s ga cho'zib yuborar edi (5-6 baravar sekinroq).
 Shu sabab bitta umumiy, butun process davomida qayta ishlatiladigan client
 ishlatiladi — httpx.AsyncClient aynan shunday, ko'p vazifa/so'rov orasida
 xavfsiz ulashiladigan qilib mo'ljallangan (o'ziga xos connection pool bilan)."""
+import asyncio
+import logging
 from typing import Optional
 
 import httpx
 from fastapi import HTTPException
 
 from .config import MOYSKLAD_BASE_URL
+
+logger = logging.getLogger("moysklad_pos.moysklad_client")
 
 _client: "httpx.AsyncClient | None" = None
 
@@ -55,6 +59,35 @@ async def ms_request(method: str, path: str, token: str, **kwargs) -> Optional[d
     if response.status_code == 204 or not response.content:
         return None
     return response.json()
+
+
+async def ms_request_resilient(
+    method: str, path: str, token: str, *, attempts: int = 3, retry_timeout: float = 45.0, **kwargs
+) -> Optional[dict]:
+    """`ms_request`ning xuddi o'zi, lekin MoySklad'ning vaqtinchalik
+    sekinligiga (tarmoq/vaqt tugashi) chidamli — bir necha marta, ancha
+    kattaroq timeout bilan qayta uriniladi. Faqat CHIN (409/400/... kabi)
+    MoySklad rad etishlari darhol yuqoriga uzatiladi, faqat ReadTimeout/
+    tarmoq xatolari qayta uriniladi.
+
+    MUHIM (real productionda tasdiqlangan, 2026-08-25/26): MoySklad ba'zan
+    standart 25s'dan ancha ko'proq vaqt olib javob beradi — bu ayniqsa
+    kesh hali to'ldirilmagan BIRINCHI so'rovda (kunning birinchi kassiri/
+    qidiruvi) sezilarli, chunki keyingi so'rovlar keshdan (1 soatga)
+    javob oladi va bu funksiyaga umuman murojaat qilmaydi."""
+    last_exc: "Exception | None" = None
+    for attempt in range(attempts):
+        try:
+            return await ms_request(method, path, token=token, timeout=retry_timeout, **kwargs)
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_exc = exc
+            logger.warning(
+                "MoySklad so'rovida vaqtinchalik xatolik (%s %s, urinish %d/%d): %s",
+                method, path, attempt + 1, attempts, exc,
+            )
+            if attempt < attempts - 1:
+                await asyncio.sleep(2.0 * (attempt + 1))
+    raise last_exc
 
 
 async def exchange_credentials_for_token(login: str, password: str) -> str:
