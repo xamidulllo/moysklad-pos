@@ -15,6 +15,7 @@ alohida ro'yxatiga ega.
 """
 import asyncio
 import logging
+import os
 import time
 from typing import Optional
 
@@ -42,6 +43,14 @@ _BULK_MAX_ATTEMPTS = 3
 # 0/150. Shu sabab tovarlar UCHUN alohida, kichikroq sahifa hajmi ishlatiladi
 # (mijozlarga rasm kerak emas, ular uchun 1000 xavfsiz).
 _ASSORTMENT_PAGE_SIZE = 100
+
+# VAQTINCHALIK (2026-08-26): MoySklad hozir bitta sahifaga ba'zan 60+ soniya
+# javob berayotgani sabab, rasmlar uchun kerak bo'lgan 100'lik kichik sahifa
+# hajmi (o'ndan ortiq alohida so'rov) butun katalogni yuklashni daqiqalab
+# cho'zib, qidiruvni ishlatib bo'lmas holga keltirdi. MoySklad'ning javob
+# tezligi tiklangach, INCLUDE_PRODUCT_IMAGES=true qilib rasmlarni qaytarish
+# mumkin — hozircha ishlash (funksiyaning o'zi) rasmlardan ustun.
+INCLUDE_IMAGES = os.getenv("INCLUDE_PRODUCT_IMAGES", "false").strip().lower() == "true"
 
 _assortment: dict[str, list[dict]] = {}
 _counterparties: dict[str, list[dict]] = {}
@@ -95,8 +104,12 @@ async def _fetch_all(path: str, token: str, page_size: int = _PAGE_SIZE, **param
 
 
 async def _refresh(account_id: str, token: str) -> None:
+    if INCLUDE_IMAGES:
+        assortment_fetch = _fetch_all("/entity/assortment", token, page_size=_ASSORTMENT_PAGE_SIZE, expand="images")
+    else:
+        assortment_fetch = _fetch_all("/entity/assortment", token, page_size=_PAGE_SIZE)
     assortment, counterparties = await asyncio.gather(
-        _fetch_all("/entity/assortment", token, page_size=_ASSORTMENT_PAGE_SIZE, expand="images"),
+        assortment_fetch,
         _fetch_all("/entity/counterparty", token),
     )
     _assortment[account_id] = assortment
