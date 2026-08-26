@@ -373,10 +373,23 @@ async def _get_stock_by_store(token: str, store_id: str) -> "dict[str, float]":
             if len(rows) < 1000:
                 break
             offset += 1000
+        save_task = asyncio.create_task(sheets_client.save_stock_snapshot(store_id, stock_map))
+        catalog_cache._background_tasks.add(save_task)
+        save_task.add_done_callback(catalog_cache._background_tasks.discard)
         return {"map": stock_map}
 
-    result = await _cached(f"stock_by_store:{store_id}", token, loader)
-    return result["map"]
+    try:
+        result = await _cached(f"stock_by_store:{store_id}", token, loader)
+        return result["map"]
+    except Exception:
+        # MoySklad'ning o'zi hozir sekin/ishlamay qolgan bo'lishi mumkin (real
+        # productionda soatlab tasdiqlangan) — kassirni butunlay to'xtatib
+        # qo'ymaslik uchun Sheets'dagi so'nggi ma'lum qoldiqqa tushamiz.
+        logger.exception("Qoldiq hisobotini MoySklad'dan olib bo'lmadi — Sheets suratlanmasiga tushilmoqda")
+        snapshot = await sheets_client.load_stock_snapshot(store_id)
+        if snapshot is not None:
+            return snapshot
+        raise
 
 
 @app.get("/api/products")

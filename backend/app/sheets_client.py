@@ -368,3 +368,144 @@ async def compare_and_set_daily_status(
     if not row or row["status"] not in expected_statuses:
         return False
     return await update_daily_order(business_day, status=new_status, **extra_updates)
+
+
+# ---------------------------------------------------------------------------
+# Katalog/mijozlar "suratlanmasi" (snapshot) — MoySklad hozir ba'zan juda sekin
+# yoki umuman javob bermay qolayotgani sabab (real productionda 60+ soniyalik
+# ReadTimeout'lar bilan tasdiqlangan), butun tovar/mijoz ro'yxati bu yerda
+# ham saqlanadi. Ilova qayta ishga tushganda (yoki MoySklad hozircha
+# ishlamasa) katalog keshi AVVAL shu "eski, lekin mavjud" nusxadan darhol
+# to'ldiriladi (hech qachon MoySklad'ni kutmasdan), so'ng fonda haqiqiy
+# MoySklad'dan yangilanadi — catalog_cache.py'ga qarang.
+# ---------------------------------------------------------------------------
+_CATALOG_SNAPSHOT_WORKSHEET_NAME = "CatalogSnapshot"
+_CUSTOMERS_SNAPSHOT_WORKSHEET_NAME = "CustomersSnapshot"
+_SNAPSHOT_COLUMNS = ["id", "data_json"]
+
+_catalog_snapshot_worksheet: "gspread.Worksheet | None" = None
+_catalog_snapshot_lock = asyncio.Lock()
+_customers_snapshot_worksheet: "gspread.Worksheet | None" = None
+_customers_snapshot_lock = asyncio.Lock()
+
+
+async def _get_catalog_snapshot_worksheet() -> gspread.Worksheet:
+    global _catalog_snapshot_worksheet
+    if _catalog_snapshot_worksheet is None:
+        async with _catalog_snapshot_lock:
+            if _catalog_snapshot_worksheet is None:
+                _catalog_snapshot_worksheet = await asyncio.to_thread(
+                    _open_worksheet_sync, _CATALOG_SNAPSHOT_WORKSHEET_NAME, _SNAPSHOT_COLUMNS
+                )
+    return _catalog_snapshot_worksheet
+
+
+async def _get_customers_snapshot_worksheet() -> gspread.Worksheet:
+    global _customers_snapshot_worksheet
+    if _customers_snapshot_worksheet is None:
+        async with _customers_snapshot_lock:
+            if _customers_snapshot_worksheet is None:
+                _customers_snapshot_worksheet = await asyncio.to_thread(
+                    _open_worksheet_sync, _CUSTOMERS_SNAPSHOT_WORKSHEET_NAME, _SNAPSHOT_COLUMNS
+                )
+    return _customers_snapshot_worksheet
+
+
+def _save_snapshot_sync(ws: gspread.Worksheet, rows: list[dict]) -> None:
+    values = [_SNAPSHOT_COLUMNS] + [
+        [str(r.get("id") or ""), json.dumps(r, ensure_ascii=False)] for r in rows
+    ]
+    old_row_count = ws.row_count
+    ws.update("A1", values, value_input_option="RAW")
+    # Yangi ro'yxat eskisidan qisqaroq bo'lsa, ortiqcha eski qatorlarni
+    # tozalaymiz — lekin AVVAL yangi ma'lumot yozilgandan KEYIN, shunda
+    # yozish o'rtasida uzilib qolsa ham eski (to'liq) nusxa saqlanib qoladi.
+    new_row_count = len(values)
+    if old_row_count > new_row_count:
+        ws.batch_clear([f"A{new_row_count + 1}:B{old_row_count}"])
+
+
+def _load_snapshot_sync(ws: gspread.Worksheet) -> list[dict]:
+    values = ws.get_all_values()
+    rows = []
+    for raw in values[1:]:
+        if len(raw) < 2 or not raw[1]:
+            continue
+        try:
+            rows.append(json.loads(raw[1]))
+        except ValueError:
+            continue
+    return rows
+
+
+async def save_catalog_snapshot(assortment_rows: list[dict]) -> None:
+    ws = await _get_catalog_snapshot_worksheet()
+    await asyncio.to_thread(_save_snapshot_sync, ws, assortment_rows)
+
+
+async def load_catalog_snapshot() -> list[dict]:
+    ws = await _get_catalog_snapshot_worksheet()
+    return await asyncio.to_thread(_load_snapshot_sync, ws)
+
+
+async def save_customers_snapshot(counterparty_rows: list[dict]) -> None:
+    ws = await _get_customers_snapshot_worksheet()
+    await asyncio.to_thread(_save_snapshot_sync, ws, counterparty_rows)
+
+
+async def load_customers_snapshot() -> list[dict]:
+    ws = await _get_customers_snapshot_worksheet()
+    return await asyncio.to_thread(_load_snapshot_sync, ws)
+
+
+# Har bir ombor uchun so'nggi ma'lum qoldiq (astatka) suratlanmasi — bitta
+# qator = bitta ombor, "report/stock/bystore" MoySklad'da sekin/ishlamay
+# qolganda ham kassir oxirgi ma'lum qoldiq bilan ishlashda davom etishi uchun.
+_STOCK_SNAPSHOT_WORKSHEET_NAME = "StockSnapshot"
+_STOCK_SNAPSHOT_COLUMNS = ["store_id", "data_json"]
+_stock_snapshot_worksheet: "gspread.Worksheet | None" = None
+_stock_snapshot_lock = asyncio.Lock()
+
+
+async def _get_stock_snapshot_worksheet() -> gspread.Worksheet:
+    global _stock_snapshot_worksheet
+    if _stock_snapshot_worksheet is None:
+        async with _stock_snapshot_lock:
+            if _stock_snapshot_worksheet is None:
+                _stock_snapshot_worksheet = await asyncio.to_thread(
+                    _open_worksheet_sync, _STOCK_SNAPSHOT_WORKSHEET_NAME, _STOCK_SNAPSHOT_COLUMNS
+                )
+    return _stock_snapshot_worksheet
+
+
+def _save_stock_snapshot_sync(ws: gspread.Worksheet, store_id: str, stock_map: dict) -> None:
+    values = ws.get_all_values()
+    rows = {r[0]: r[1] for r in values[1:] if len(r) >= 2 and r[0]}
+    rows[store_id] = json.dumps(stock_map, ensure_ascii=False)
+    new_values = [_STOCK_SNAPSHOT_COLUMNS] + [[sid, data] for sid, data in rows.items()]
+    old_row_count = ws.row_count
+    ws.update("A1", new_values, value_input_option="RAW")
+    new_row_count = len(new_values)
+    if old_row_count > new_row_count:
+        ws.batch_clear([f"A{new_row_count + 1}:B{old_row_count}"])
+
+
+def _load_stock_snapshot_sync(ws: gspread.Worksheet, store_id: str) -> "dict[str, float] | None":
+    values = ws.get_all_values()
+    for raw in values[1:]:
+        if len(raw) >= 2 and raw[0] == store_id and raw[1]:
+            try:
+                return json.loads(raw[1])
+            except ValueError:
+                return None
+    return None
+
+
+async def save_stock_snapshot(store_id: str, stock_map: "dict[str, float]") -> None:
+    ws = await _get_stock_snapshot_worksheet()
+    await asyncio.to_thread(_save_stock_snapshot_sync, ws, store_id, stock_map)
+
+
+async def load_stock_snapshot(store_id: str) -> "dict[str, float] | None":
+    ws = await _get_stock_snapshot_worksheet()
+    return await asyncio.to_thread(_load_stock_snapshot_sync, ws, store_id)

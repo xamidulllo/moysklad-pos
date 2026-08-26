@@ -22,6 +22,7 @@ from typing import Optional
 import httpx
 from fastapi import HTTPException
 
+from . import sheets_client
 from .moysklad_client import ms_request
 
 logger = logging.getLogger("moysklad_pos.catalog_cache")
@@ -103,6 +104,19 @@ async def _fetch_all(path: str, token: str, page_size: int = _PAGE_SIZE, **param
     return items
 
 
+async def _save_snapshot_best_effort(assortment: list[dict], counterparties: list[dict]) -> None:
+    """MoySklad'dan yangi olingan katalogni Sheets'ga ham yozadi — keyingi
+    qayta ishga tushirishda (yoki MoySklad hozircha ishlamasa) shu "so'nggi
+    ma'lum" nusxadan darhol foydalanish uchun. Xatolik bo'lsa ham asosiy
+    (xotiradagi) keshga ta'sir qilmaydi — faqat logga yoziladi."""
+    try:
+        await sheets_client.save_catalog_snapshot(assortment)
+        await sheets_client.save_customers_snapshot(counterparties)
+        logger.info("Katalog suratlanmasi Sheets'ga saqlandi (%d tovar, %d mijoz)", len(assortment), len(counterparties))
+    except Exception:
+        logger.exception("Katalog suratlanmasini Sheets'ga saqlab bo'lmadi — xotiradagi kesh baribir yangilangan")
+
+
 async def _refresh(account_id: str, token: str) -> None:
     if INCLUDE_IMAGES:
         assortment_fetch = _fetch_all("/entity/assortment", token, page_size=_ASSORTMENT_PAGE_SIZE, expand="images")
@@ -116,6 +130,13 @@ async def _refresh(account_id: str, token: str) -> None:
     _counterparties[account_id] = counterparties
     _last_refresh[account_id] = time.time()
 
+    # Sheets'ga yozish sekin bo'lishi mumkin (Google API) — chaqiruvchini
+    # (kassirni yoki fon vazifasini) bu bilan kutdirmaymiz, alohida vazifada
+    # ketadi.
+    save_task = asyncio.create_task(_save_snapshot_best_effort(assortment, counterparties))
+    _background_tasks.add(save_task)
+    save_task.add_done_callback(_background_tasks.discard)
+
 
 _refreshing: dict[str, bool] = {}
 # asyncio.create_task() qaytargan Task'ga hech kim havola saqlamasa, u tugashidan
@@ -125,28 +146,61 @@ _refreshing: dict[str, bool] = {}
 _background_tasks: set = set()
 
 
+async def _try_load_from_sheets_snapshot(account_id: str) -> bool:
+    """MoySklad'ga umuman tegmasdan, oldin saqlangan Sheets suratlanmasidan
+    kataloqni darhol tiklashga urinadi. MoySklad hozir ishlamasa/sekin
+    bo'lsa ham, qidiruv "eski, lekin bor" ma'lumot bilan ishlashda davom
+    etishi uchun (real productionda MoySklad'ning bir necha soatlab
+    javob bermay qolgani tasdiqlangan)."""
+    try:
+        assortment, counterparties = await asyncio.gather(
+            sheets_client.load_catalog_snapshot(),
+            sheets_client.load_customers_snapshot(),
+        )
+    except Exception:
+        logger.exception("Sheets suratlanmasini o'qib bo'lmadi")
+        return False
+    if not assortment and not counterparties:
+        return False
+    _assortment[account_id] = assortment
+    _counterparties[account_id] = counterparties
+    logger.info(
+        "Katalog Sheets suratlanmasidan tiklandi (%d tovar, %d mijoz) — MoySklad'dan yangilanish fonda davom etadi",
+        len(assortment), len(counterparties),
+    )
+    return True
+
+
 async def ensure_fresh(account_id: str, token: str) -> None:
-    """Kesh HALI UMUMAN to'ldirilmagan bo'lsa — chaqiruvchi so'rovning o'zida
-    kutib turadi (ko'rsatadigan boshqa ma'lumot yo'q, ilojsiz).
+    """Kesh HALI UMUMAN to'ldirilmagan bo'lsa — avval Sheets'dagi so'nggi
+    ma'lum suratlanmadan (agar bor bo'lsa) DARHOL tiklanadi, MoySklad'dan
+    haqiqiy yangilanish esa fonda, kassirni kutdirmasdan ketadi. Faqat
+    Sheets'da ham hech narsa bo'lmasa (masalan ilovaning eng birinchi
+    ishga tushishi), chaqiruvchi so'rovning o'zida MoySklad'ni kutadi
+    (ko'rsatadigan boshqa ma'lumot yo'q, ilojsiz).
 
     Lekin kesh ALLAQACHON bор, faqat 1 soatdan eski bo'lsa — chaqiruvchini
     UMUMAN kutdirmaydi: eskirgan (lekin mavjud) ma'lumot darhol qaytariladi,
-    yangilash esa fonda, alohida vazifada boshlanadi. MUHIM (real hisobda
-    o'lchab tekshirilgan): "expand=images" bilan to'liq katalogni (100 tadan
-    bo'lib, quyidagi eslatmaga qarang) yangilash ~20+ soniya vaqt oladi — buni
-    kassirning bitta qidiruv so'rovi ichida kutdirish mumkin emas."""
+    yangilash esa fonda, alohida vazifada boshlanadi."""
     if account_id not in _last_refresh:
         async with _get_lock(account_id):
             if account_id not in _last_refresh:
-                try:
-                    await _refresh(account_id, token)
-                except (httpx.TimeoutException, httpx.TransportError) as exc:
-                    logger.exception("Birinchi kataloq yuklashi muvaffaqiyatsiz")
-                    raise HTTPException(
-                        status_code=503,
-                        detail="Katalog hali yuklanmoqda, birozdan keyin qayta urinib ko'ring",
-                    ) from exc
-        return
+                if await _try_load_from_sheets_snapshot(account_id):
+                    # Kesh "eskirgan" deb belgilanadi — pastdagi oddiy fon-
+                    # yangilash yo'li (REFRESH_INTERVAL_SECONDS tekshiruvi)
+                    # MoySklad'dan haqiqiy yangilanishni o'zi boshlab yuboradi,
+                    # kassirni bu safar ham kutdirmasdan.
+                    _last_refresh[account_id] = 0.0
+                else:
+                    try:
+                        await _refresh(account_id, token)
+                    except (httpx.TimeoutException, httpx.TransportError) as exc:
+                        logger.exception("Birinchi kataloq yuklashi muvaffaqiyatsiz")
+                        raise HTTPException(
+                            status_code=503,
+                            detail="Katalog hali yuklanmoqda, birozdan keyin qayta urinib ko'ring",
+                        ) from exc
+                    return
 
     if time.time() - _last_refresh[account_id] < REFRESH_INTERVAL_SECONDS:
         return
