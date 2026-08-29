@@ -27,8 +27,16 @@ from .moysklad_client import ms_request
 
 logger = logging.getLogger("moysklad_pos.catalog_cache")
 
+# MUHIM (real productionda to'g'ridan-to'g'ri o'lchab tekshirilgan, 2026-08-29):
+# hozir MoySklad'ning bu hisobida "entity/assortment"ga limit=50 — 0.7 soniyada
+# javob beradi, LEKIN limit=100 va undan katta HAR QANDAY qiymat 45+ soniya
+# ichida UMUMAN javob bermaydi (bir nechta marta, izchil tasdiqlangan — bu
+# tasodif emas, aynan shu hisobda hozir joriy bo'lgan qattiq chegara). Shu
+# sabab sahifa hajmi qasddan kichik qilib belgilangan — ko'proq so'rov, lekin
+# HAR BIRI tez va ishonchli, kattaroq-lekin-osilib-qoladigan bitta so'rovdan
+# ko'ra ancha yaxshi.
 REFRESH_INTERVAL_SECONDS = 3600
-_PAGE_SIZE = 1000
+_PAGE_SIZE = 50
 # Umumiy httpx klient standart bo'yicha 25s timeout ishlatadi (interaktiv
 # so'rovlar uchun mos — kassir tezda javob kutadi). Lekin butun katalogni
 # (o'nlab sahifa) yuklash paytida MoySklad ba'zan bitta sahifaga shuncha
@@ -41,9 +49,10 @@ _BULK_MAX_ATTEMPTS = 3
 # "limit" taxminan 100 dan oshganda JIM RAVISHDA ishlamay qoladi — MoySklad
 # rasm ma'lumotini butunlay tashlab yuboradi (xato bermaydi, shunchaki "images"
 # maydoni bo'sh qaytadi). limit=100'da 40/100 tovarda rasm bor edi, limit=150'da
-# 0/150. Shu sabab tovarlar UCHUN alohida, kichikroq sahifa hajmi ishlatiladi
-# (mijozlarga rasm kerak emas, ular uchun 1000 xavfsiz).
-_ASSORTMENT_PAGE_SIZE = 100
+# 0/150. 2026-08-29'da esa limit=100 (rasmsiz ham) butunlay javobsiz osilib
+# qolishi alohida tasdiqlandi (yuqoridagi _PAGE_SIZE'ga qarang) — shu sabab bu
+# ham xuddi shu xavfsiz kichik qiymatga tushirilgan.
+_ASSORTMENT_PAGE_SIZE = _PAGE_SIZE
 
 # VAQTINCHALIK (2026-08-26): MoySklad hozir bitta sahifaga ba'zan 60+ soniya
 # javob berayotgani sabab, rasmlar uchun kerak bo'lgan 100'lik kichik sahifa

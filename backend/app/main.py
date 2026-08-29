@@ -367,11 +367,17 @@ async def _get_stock_by_store(token: str, store_id: str) -> "dict[str, float]":
         stock_map: dict[str, float] = {}
         offset = 0
         while True:
+            # MUHIM (real productionda 2026-08-29'da tasdiqlangan): MoySklad'da
+            # hozir limit=100+ so'rovlar (hatto "entity/assortment"da ham)
+            # butunlay javobsiz osilib qolyapti, limit=50 esa <1 soniyada
+            # javob beradi — shu sabab bu hisobotda ham xuddi shu xavfsiz
+            # kichik sahifa hajmi ishlatiladi (catalog_cache._PAGE_SIZE'ga
+            # qarang).
             data = await ms_request_resilient(
                 "GET",
                 "/report/stock/bystore",
                 token=token,
-                params={"filter": f"store={store_href}", "limit": 1000, "offset": offset},
+                params={"filter": f"store={store_href}", "limit": catalog_cache._PAGE_SIZE, "offset": offset},
             )
             rows = data.get("rows", [])
             for row in rows:
@@ -380,9 +386,9 @@ async def _get_stock_by_store(token: str, store_id: str) -> "dict[str, float]":
                     continue
                 entries = row.get("stockByStore") or []
                 stock_map[product_id] = sum(e.get("stock") or 0 for e in entries)
-            if len(rows) < 1000:
+            if len(rows) < catalog_cache._PAGE_SIZE:
                 break
-            offset += 1000
+            offset += catalog_cache._PAGE_SIZE
 
         async def _save_snapshot_with_timeout() -> None:
             # MUHIM (real productionda topilgan xato, 2026-08-29): Google
@@ -592,35 +598,6 @@ async def get_context(token: str = Depends(get_current_token)):
         }
 
     return await _cached("context", token, loader)
-
-
-@app.get("/api/shop/test-diagnose-assortment")
-async def _test_diagnose_assortment(token: str = Depends(get_current_token)):
-    """VAQTINCHALIK diagnostika (2026-08-29) — faqat o'qiydi, hech narsa
-    yaratmaydi/o'zgartirmaydi. MoySklad'ning turli sahifa hajmlarida (bitta
-    so'rov, ko'p sahifali emas) qanchalik sekinlashishini o'lchaydi — aniqlandi:
-    5 talik sahifa 0.2-1s, lekin to'liq (1000 talik) ko'p-sahifali yuklash
-    90+ soniyada tugamayapti. Bu shu sahifa hajmi bilan bog'liqmi, aniqlash
-    uchun. Tekshirilgach OLIB TASHLANADI."""
-    import time as _time
-    result: dict = {}
-
-    async def _timed(name: str, coro, timeout: float):
-        t0 = _time.monotonic()
-        try:
-            value = await asyncio.wait_for(coro, timeout=timeout)
-            result[name] = {"elapsed_seconds": round(_time.monotonic() - t0, 2), "rows": len((value or {}).get("rows", []))}
-        except Exception as exc:
-            result[name] = {"elapsed_seconds": round(_time.monotonic() - t0, 2), "error": f"{type(exc).__name__}: {exc}"}
-
-    for size in (50, 100, 200, 500, 1000):
-        await _timed(
-            f"assortment_page_{size}",
-            ms_request("GET", "/entity/assortment", token=token, params={"limit": size, "offset": 0}, timeout=45.0),
-            45.0,
-        )
-
-    return result
 
 
 @app.get("/api/currencies")
