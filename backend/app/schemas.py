@@ -3,9 +3,12 @@ from typing import Optional
 from pydantic import BaseModel, Field, model_validator
 
 
-class LoginRequest(BaseModel):
-    login: str = Field(..., min_length=1)
-    password: str = Field(..., min_length=1)
+class CashierEntryRequest(BaseModel):
+    """Endi shaxsiy MoySklad login/parol emas — faqat kassir o'z ismini
+    kiritadi (hisobot/audit uchun), butun tizim bitta umumiy MoySklad
+    hisobiga ulanadi."""
+    name: str = Field(..., min_length=1, max_length=100)
+    pin: Optional[str] = Field(None, max_length=32)
 
 
 class CartItemIn(BaseModel):

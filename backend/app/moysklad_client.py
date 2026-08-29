@@ -49,6 +49,26 @@ async def ms_request(method: str, path: str, token: str, **kwargs) -> Optional[d
     headers["Authorization"] = f"Bearer {token}"
     response = await _get_client().request(method, path, headers=headers, **kwargs)
 
+    if response.status_code in (401, 403):
+        # MUHIM (2026-08-29): ilova endi FAQAT bitta umumiy MoySklad hisobidan
+        # foydalanadi (individual kassir login'lari olib tashlandi) — shu
+        # sabab 401/403 deyarli har doim shu tokenning boshqa joyda (masalan
+        # fon vazifasi yoki bir vaqtdagi boshqa so'rov tomonidan) yangilanib/
+        # bekor qilingani ma'nosini anglatadi, noto'g'ri kalit emas. Shu
+        # sabab bu yerda, ENG PASTKI darajada (har bir marshrutga qo'lda
+        # takrorlash o'rniga), tokenni majburiy yangilab BIR MARTA avtomatik
+        # qayta uriniladi. Aylanma importdan qochish uchun import shu yerda
+        # (sync_job.py o'zi ham shu modulni import qiladi).
+        from .sync_job import get_shared_admin_token
+        try:
+            fresh_token = await get_shared_admin_token(force_refresh=True)
+        except Exception:
+            fresh_token = None
+        if fresh_token and fresh_token != token:
+            logger.warning("MoySklad token bekor qilingan (%s %s, %d) — yangilab qayta urinilmoqda", method, path, response.status_code)
+            headers["Authorization"] = f"Bearer {fresh_token}"
+            response = await _get_client().request(method, path, headers=headers, **kwargs)
+
     if response.status_code >= 400:
         try:
             detail = response.json()

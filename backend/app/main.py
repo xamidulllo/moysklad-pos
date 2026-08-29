@@ -1,7 +1,7 @@
 """Mobil POS uchun FastAPI backend — MoySklad API oldida proksi va biznes-mantiq qatlami.
 
 Marshrutlar:
-  POST /api/login           — kassir MoySklad login/paroli bilan kiradi (sessiya ochiladi)
+  POST /api/login           — kassir o'z ismini (va ixtiyoriy PIN'ni) kiritadi (sessiya ochiladi)
   POST /api/logout          — joriy sessiyani yopadi
   GET  /api/me               — joriy kassir haqida ma'lumot
   GET  /api/products        — mahsulotlarni nomi/kod/artikul bo'yicha qidirish (entity/assortment)
@@ -24,11 +24,14 @@ Endi checkout ikki rejimda ishlashi mumkin (config.CHECKOUT_MODE):
     baravar to'g'ridan-to'g'ri yozadi.
 
 Har bir /api/* (login'dan tashqari) marshrut joriy kassir sessiyasini talab qiladi —
-MoySklad'ga so'rov shu kassirning shaxsiy tokeni bilan yuboriladi (auth.py'ga qarang).
+lekin MoySklad'ga so'rov endi kassirning shaxsiy tokeni bilan EMAS, bitta umumiy
+(sync_job.get_shared_admin_token()) hisob tokeni bilan yuboriladi (auth.py'ga qarang) —
+2026-08-29'da shaxsiy MoySklad login/parol butunlay olib tashlandi.
 """
 import asyncio
 import json
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -54,14 +57,15 @@ from .config import (
     SESSION_COOKIE_NAME,
     SESSION_COOKIE_SECURE,
     SESSION_TTL_HOURS,
+    SHOP_ACCESS_PIN,
     SHOP_ALLOWED_ACCOUNT_NAMES,
     SHOP_ORGANIZATION_ID,
     SHOP_PRICE_TYPE_NAMES,
 )
 from .shop_day import business_day_key, now_in_shop_tz
 from .moysklad_client import close_client as close_ms_client
-from .moysklad_client import exchange_credentials_for_token, ms_request, ms_request_resilient
-from .schemas import CheckoutRequest, CounterpartyCreate, LoginRequest, PendingOrderItemsEdit
+from .moysklad_client import ms_request, ms_request_resilient
+from .schemas import CashierEntryRequest, CheckoutRequest, CounterpartyCreate, PendingOrderItemsEdit
 from .utils import _id_from_href
 
 logger = logging.getLogger("moysklad_pos.main")
@@ -219,12 +223,18 @@ def _pick_sale_price(sale_prices: list, default_price_type_id: "str | None") -> 
 
 
 @app.post("/api/login")
-async def login(payload: LoginRequest, response: Response):
-    token = await exchange_credentials_for_token(payload.login, payload.password)
-    employee = await ms_request("GET", "/context/employee", token=token)
-    employee_name = employee.get("name") or employee.get("fullName") or payload.login
+async def login(payload: CashierEntryRequest, response: Response):
+    """Endi shaxsiy MoySklad login/parol so'ramaydi — bu yopiq, faqat
+    avtoservis o'z jamoasi ishlatadigan tizim, hammasi baribir bitta umumiy
+    MoySklad hisobiga ulanadi. Bu yerda MoySklad'ga hech qanday so'rov
+    yuborilmaydi — shuning uchun kirish deyarli oniy (aks holda shu qadam
+    aynan MoySklad'ning sekinligiga to'g'ridan-to'g'ri bog'liq bo'lib
+    qolardi)."""
+    if SHOP_ACCESS_PIN and not (payload.pin and secrets.compare_digest(payload.pin, SHOP_ACCESS_PIN)):
+        raise HTTPException(status_code=401, detail="PIN noto'g'ri")
 
-    session_id = create_session(token, employee_name)
+    employee_name = payload.name.strip()
+    session_id = create_session(employee_name)
     response.set_cookie(
         key=SESSION_COOKIE_NAME,
         value=session_id,
@@ -664,7 +674,8 @@ async def checkout(payload: CheckoutRequest, session: dict = Depends(get_current
         }
 
     if not _order_uses_queue(payload):
-        result = await execute_checkout_chain(payload, session["token"])
+        token = await sync_job.get_shared_admin_token()
+        result = await execute_checkout_chain(payload, token)
         return {"mode": "direct", **result}
 
     order_id = str(uuid4())
@@ -794,62 +805,27 @@ async def get_orders_history(token: str = Depends(get_current_token)):
     MoySklad'ga allaqachon sinxronlangan buyurtmalar (maxsus "POS Mini App"
     sotuv kanali bo'yicha filtrlangan) + "queue" rejimida hali navbatda
     turgan (kutilmoqda/xato) buyurtmalar, bitta vaqt bo'yicha tartiblangan
-    ro'yxat sifatida."""
+    ro'yxat sifatida.
 
-    history_token = token
-    if MS_SYNC_LOGIN and MS_SYNC_PASSWORD:
-        # "queue" rejimida BARCHA sinxronlangan hujjatlar umumiy sync hisobi
-        # (MS_SYNC_LOGIN) nomidan yaratiladi — agar KO'RUVCHI kassirning o'z
-        # MoySklad huquqi "faqat o'zi yaratgan hujjatlarni ko'rish" bilan
-        # cheklangan bo'lsa, o'z tokeni bilan so'ralganda bu hujjatlarning
-        # HECH birini ko'rmaydi (garchi aslida aynan o'zi kiritgan bo'lsa
-        # ham — chunki MoySklad'ning nazarida ularni sync hisobi yaratgan).
-        # Shu sabab Tarix har doim shu umumiy hisob nomidan so'raladi — "Tarix
-        # barcha kassirlarga umumiy" tamoyiliga mos, MoySklad'dagi huquq
-        # cheklovlaridan qat'i nazar (real hisobda shunday muammo tasdiqlangan).
-        #
-        # MUHIM: bu — sync_job.py'dagi BILAN ULASHILGAN, keshlangan token
-        # (har safar yangisini OLMAYDI) — aks holda "Tarix" har ochilganda
-        # HAM, sync ishi HAM mustaqil yangi token olib, MoySklad bir login
-        # uchun faqat bitta faol token saqlagani sabab, aynan shu umumiy
-        # hisob bilan ilovada FAOL ishlayotgan boshqa foydalanuvchining
-        # sessiyasi kutilmaganda uzilib qolar edi (real productionda
-        # tasdiqlangan muammo — ikkalasi alohida keshlanganda ham hali
-        # bir-birini bekor qilib turardi).
-        using_shared_token = True
-        try:
-            history_token = await sync_job.get_shared_admin_token()
-        except HTTPException:
-            history_token = token  # sync hisobi ishlamasa ham, hech bo'lmasa o'z ko'rinishi ko'rsatiladi
-            using_shared_token = False
-    else:
-        using_shared_token = False
-
-    async def _fetch(tok: str) -> dict:
-        channel_meta = await _get_pos_sales_channel_meta(tok)
-        return await ms_request(
-            "GET",
-            "/entity/customerorder",
-            token=tok,
-            params={
-                "filter": f"salesChannel={channel_meta['href']}",
-                "expand": "agent",
-                "order": "moment,desc",
-                "limit": 50,
-            },
-        )
-
-    try:
-        data = await _fetch(history_token)
-    except HTTPException as exc:
-        if not using_shared_token or exc.status_code not in (401, 403):
-            raise
-        # Umumiy token boshqa joyda (masalan katalog isitish yoki sync ishi
-        # tomonidan) bekor qilingan bo'lishi mumkin — bir marta majburiy
-        # yangilab qayta uriniladi (sync_job.py'dagi bilan bir xil naqsh).
-        logger.warning("Tarix uchun umumiy token bekor qilingan (401/403) — majburiy yangilab qayta urinilmoqda")
-        history_token = await sync_job.get_shared_admin_token(force_refresh=True)
-        data = await _fetch(history_token)
+    MUHIM (2026-08-29): `token` (get_current_token orqali) endi doim BITTA
+    umumiy MoySklad hisobiga tegishli — individual kassir tokenlari olib
+    tashlangani sabab, bu yerda alohida "sync hisobiga almashtirish" mantig'i
+    endi kerak emas (avval shu almashtirish aynan MoySklad huquq cheklovi
+    muammosini yechish uchun qo'shilgan edi — endi muammoning o'zi yo'q).
+    401/403 bo'lsa ham, tokenni majburiy yangilab qayta urinish endi
+    ms_request()'ning o'zida, markazlashgan holda amalga oshadi."""
+    channel_meta = await _get_pos_sales_channel_meta(token)
+    data = await ms_request(
+        "GET",
+        "/entity/customerorder",
+        token=token,
+        params={
+            "filter": f"salesChannel={channel_meta['href']}",
+            "expand": "agent",
+            "order": "moment,desc",
+            "limit": 50,
+        },
+    )
 
     items = []
     for row in data.get("rows", []):

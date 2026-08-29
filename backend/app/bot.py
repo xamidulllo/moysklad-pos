@@ -5,10 +5,9 @@ fon vazifasi (background task) sifatida ishga tushiriladi (main.py'dagi
 lifespan orqali) — shunda bepul hosting tarifida (masalan Render) faqat bitta
 "Web Service" kifoya, alohida to'lovli "background worker" kerak bo'lmaydi.
 
-Haqiqiy MoySklad login/paroli baribir Web App ichidagi kirish ekranida
-so'raladi — bot faqat kassani ochish uchun "eshik" vazifasini bajaradi,
-Telegram foydalanuvchisi identifikatsiyasi MoySklad autentifikatsiyasini
-almashtirmaydi.
+Ilova endi shaxsiy MoySklad login/parol so'ramaydi (2026-08-29'dan) — bitta
+umumiy MoySklad hisobiga ulangan, faqat kassir ismini so'raydi. Bot faqat
+kassani ochish uchun "eshik" vazifasini bajaradi.
 """
 import logging
 import os
@@ -45,8 +44,7 @@ async def _start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
     await update.message.reply_text(
         "MoySklad POS Kassaga xush kelibsiz!\n\n"
-        "Kassani ochish uchun pastdagi tugmani bosing, so'ng o'zingizning "
-        "shaxsiy MoySklad login/parolingiz bilan kiring.",
+        "Kassani ochish uchun pastdagi tugmani bosing, so'ng ismingizni kiriting.",
         reply_markup=keyboard,
     )
 

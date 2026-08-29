@@ -845,11 +845,9 @@ scanFileInput.addEventListener("change", async () => {
 
 // ---------------- Autentifikatsiya ----------------
 //
-// Har bir kassir o'zining shaxsiy MoySklad login/paroli bilan kiradi. Backend buni
-// MoySklad'ning o'z tokeniga almashtirib, server-side sessiya sifatida saqlaydi —
-// brauzerda faqat httpOnly sessiya cookie'si turadi, haqiqiy MoySklad tokeni
-// hech qachon JavaScript'ga yoki tarmoqqa (bizning backendimizdan tashqarida)
-// ko'rinmaydi.
+// Kassir shaxsiy MoySklad login/parol bilan emas, faqat o'z ismi (va ixtiyoriy
+// umumiy PIN) bilan kiradi — butun tizim bitta umumiy MoySklad hisobiga
+// ulangan (backend tomonida, server-side sessiya sifatida saqlanadi).
 
 function showLoginScreen() {
   document.getElementById("app").classList.add("hidden");
@@ -889,9 +887,9 @@ async function bootstrapSession() {
 
 document.getElementById("loginForm").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const login = document.getElementById("loginInput").value.trim();
-  const password = document.getElementById("passwordInput").value;
-  if (!login || !password) return;
+  const name = document.getElementById("nameInput").value.trim();
+  const pin = document.getElementById("pinInput").value.trim();
+  if (!name) return;
 
   const loginBtn = document.getElementById("loginBtn");
   try {
@@ -901,11 +899,11 @@ document.getElementById("loginForm").addEventListener("submit", async (e) => {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ login, password }),
+      body: JSON.stringify({ name, pin: pin || null }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw { status: res.status, detail: data.detail ?? data };
-    document.getElementById("passwordInput").value = "";
+    document.getElementById("pinInput").value = "";
     await showApp(data.employee_name);
   } catch (err) {
     showToast("Kirishda xatolik: " + extractErrorMessage(err), true);

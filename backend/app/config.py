@@ -40,6 +40,15 @@ EXPECTED_MS_ORGANIZATION_ID = os.getenv("EXPECTED_MS_ORGANIZATION_ID", "").strip
 MS_SYNC_LOGIN = os.getenv("MS_SYNC_LOGIN", "").strip() or None
 MS_SYNC_PASSWORD = os.getenv("MS_SYNC_PASSWORD", "").strip() or None
 
+# Ilova endi shaxsiy MoySklad login/parol so'ramaydi (barcha kassirlar
+# baribir bitta umumiy hisobdan foydalanar edi — shu sabab bu qadam faqat
+# sekinlik va token to'qnashuvlarining manbai edi, xavfsizlik emas). Kirish
+# ekrani endi faqat kassir ismini so'raydi. Ixtiyoriy umumiy PIN — agar
+# ilova havolasi tashqariga chiqib qolsa ham, begona hech qanday MoySklad
+# parolisiz kassaga kira olmasligi uchun oddiy qo'shimcha to'siq (yoqilmagan
+# bo'lsa — bo'sh qoldirilsa — PIN so'ralmaydi).
+SHOP_ACCESS_PIN = os.getenv("SHOP_ACCESS_PIN", "").strip() or None
+
 # Google Apps Script trigger shu maxfiy qiymatni "X-Sync-Secret" header'ida
 # yuborishi kerak — bo'lmasa /api/sync/run so'rovni rad etadi.
 SYNC_TRIGGER_SECRET = os.getenv("SYNC_TRIGGER_SECRET", "").strip() or None
