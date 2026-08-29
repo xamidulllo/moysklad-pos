@@ -383,7 +383,19 @@ async def _get_stock_by_store(token: str, store_id: str) -> "dict[str, float]":
             if len(rows) < 1000:
                 break
             offset += 1000
-        save_task = asyncio.create_task(sheets_client.save_stock_snapshot(store_id, stock_map))
+
+        async def _save_snapshot_with_timeout() -> None:
+            # MUHIM (real productionda topilgan xato, 2026-08-29): Google
+            # Sheets client kutubxonasi o'z so'roviga timeout qo'ymaydi —
+            # cheklanmagan vaqt kutish fon vazifalari uchun umumiy thread
+            # hovuzini band qilib qo'yishi mumkin, shu sabab bu yerda ham
+            # qat'iy chegara bor.
+            try:
+                await asyncio.wait_for(sheets_client.save_stock_snapshot(store_id, stock_map), timeout=30.0)
+            except Exception:
+                logger.exception("Qoldiq suratlanmasini Sheets'ga saqlab bo'lmadi (yoki javob bermadi)")
+
+        save_task = asyncio.create_task(_save_snapshot_with_timeout())
         catalog_cache._background_tasks.add(save_task)
         save_task.add_done_callback(catalog_cache._background_tasks.discard)
         return {"map": stock_map}
@@ -391,15 +403,24 @@ async def _get_stock_by_store(token: str, store_id: str) -> "dict[str, float]":
     try:
         result = await _cached(f"stock_by_store:{store_id}", token, loader)
         return result["map"]
-    except Exception:
+    except Exception as primary_exc:
         # MoySklad'ning o'zi hozir sekin/ishlamay qolgan bo'lishi mumkin (real
         # productionda soatlab tasdiqlangan) — kassirni butunlay to'xtatib
         # qo'ymaslik uchun Sheets'dagi so'nggi ma'lum qoldiqqa tushamiz.
+        # Bu yerda ham qat'iy timeout bor — aks holda Sheets'ning o'zi javob
+        # bermay qolganda kassir ikkalasidan ham (MoySklad HAM Sheets) abadiy
+        # kutib qolgan bo'lardi. Ikkalasi ham muvaffaqiyatsiz bo'lsa, aslida
+        # sabab bo'lgan (MoySklad'dagi) xatoni ko'rsatamiz, Sheets fallback
+        # xatosini emas.
         logger.exception("Qoldiq hisobotini MoySklad'dan olib bo'lmadi — Sheets suratlanmasiga tushilmoqda")
-        snapshot = await sheets_client.load_stock_snapshot(store_id)
+        try:
+            snapshot = await asyncio.wait_for(sheets_client.load_stock_snapshot(store_id), timeout=8.0)
+        except Exception:
+            logger.exception("Qoldiq suratlanmasini ham Sheets'dan o'qib bo'lmadi (yoki javob bermadi)")
+            raise primary_exc
         if snapshot is not None:
             return snapshot
-        raise
+        raise primary_exc
 
 
 @app.get("/api/products")

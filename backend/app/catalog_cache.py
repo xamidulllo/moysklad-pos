@@ -104,17 +104,30 @@ async def _fetch_all(path: str, token: str, page_size: int = _PAGE_SIZE, **param
     return items
 
 
+_SHEETS_SNAPSHOT_SAVE_TIMEOUT_SECONDS = 60.0
+
+
 async def _save_snapshot_best_effort(assortment: list[dict], counterparties: list[dict]) -> None:
     """MoySklad'dan yangi olingan katalogni Sheets'ga ham yozadi — keyingi
     qayta ishga tushirishda (yoki MoySklad hozircha ishlamasa) shu "so'nggi
     ma'lum" nusxadan darhol foydalanish uchun. Xatolik bo'lsa ham asosiy
-    (xotiradagi) keshga ta'sir qilmaydi — faqat logga yoziladi."""
+    (xotiradagi) keshga ta'sir qilmaydi — faqat logga yoziladi.
+
+    Bu fon vazifasi ichida ishlagani uchun osilib qolish kassirni to'g'ridan-
+    to'g'ri to'xtatmaydi, lekin cheklanmagan vaqt kutish asta-sekin
+    `asyncio.to_thread`'ning umumiy thread hovuzini band qilib, boshqa barcha
+    (aloqasiz) fon ishlarini ham asta sekinlashtirib qo'yishi mumkin edi —
+    shu sabab bu yerda ham qat'iy timeout bor."""
     try:
-        await sheets_client.save_catalog_snapshot(assortment)
-        await sheets_client.save_customers_snapshot(counterparties)
+        await asyncio.wait_for(
+            sheets_client.save_catalog_snapshot(assortment), timeout=_SHEETS_SNAPSHOT_SAVE_TIMEOUT_SECONDS
+        )
+        await asyncio.wait_for(
+            sheets_client.save_customers_snapshot(counterparties), timeout=_SHEETS_SNAPSHOT_SAVE_TIMEOUT_SECONDS
+        )
         logger.info("Katalog suratlanmasi Sheets'ga saqlandi (%d tovar, %d mijoz)", len(assortment), len(counterparties))
     except Exception:
-        logger.exception("Katalog suratlanmasini Sheets'ga saqlab bo'lmadi — xotiradagi kesh baribir yangilangan")
+        logger.exception("Katalog suratlanmasini Sheets'ga saqlab bo'lmadi (yoki javob bermadi) — xotiradagi kesh baribir yangilangan")
 
 
 async def _refresh(account_id: str, token: str) -> None:
@@ -146,19 +159,35 @@ _refreshing: dict[str, bool] = {}
 _background_tasks: set = set()
 
 
+_SHEETS_SNAPSHOT_READ_TIMEOUT_SECONDS = 8.0
+
+
 async def _try_load_from_sheets_snapshot(account_id: str) -> bool:
     """MoySklad'ga umuman tegmasdan, oldin saqlangan Sheets suratlanmasidan
     kataloqni darhol tiklashga urinadi. MoySklad hozir ishlamasa/sekin
     bo'lsa ham, qidiruv "eski, lekin bor" ma'lumot bilan ishlashda davom
     etishi uchun (real productionda MoySklad'ning bir necha soatlab
-    javob bermay qolgani tasdiqlangan)."""
+    javob bermay qolgani tasdiqlangan).
+
+    MUHIM (real productionda topilgan xato, 2026-08-29): Google Sheets/OAuth
+    client kutubxonasi (gspread) o'zining HTTP so'rovlariga HECH QANDAY
+    timeout qo'ymaydi — agar Google tomoni birinchi (hali worksheet
+    yaratilmagan) so'rovda kutilganidan sekin javob bersa, shu chaqiruv
+    ABADIY osilib qolishi mumkin edi, bu esa "suratlanma — faqat qo'shimcha
+    tezlashtirish" degan asosiy g'oyani teskarisiga aylantirar edi (butun
+    kassa ishini to'xtatib qo'yardi). Shu sabab bu yerga qat'iy tashqi
+    timeout qo'yilgan — muddat o'tsa, oddiy MoySklad'dan yuklash yo'liga
+    tushiladi (aynan Sheets ishlamagandagi kabi)."""
     try:
-        assortment, counterparties = await asyncio.gather(
-            sheets_client.load_catalog_snapshot(),
-            sheets_client.load_customers_snapshot(),
+        assortment, counterparties = await asyncio.wait_for(
+            asyncio.gather(
+                sheets_client.load_catalog_snapshot(),
+                sheets_client.load_customers_snapshot(),
+            ),
+            timeout=_SHEETS_SNAPSHOT_READ_TIMEOUT_SECONDS,
         )
     except Exception:
-        logger.exception("Sheets suratlanmasini o'qib bo'lmadi")
+        logger.exception("Sheets suratlanmasini o'qib bo'lmadi (yoki javob bermadi) — oddiy MoySklad yo'liga tushilmoqda")
         return False
     if not assortment and not counterparties:
         return False
