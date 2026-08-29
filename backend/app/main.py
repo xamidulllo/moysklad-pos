@@ -594,6 +594,30 @@ async def get_context(token: str = Depends(get_current_token)):
     return await _cached("context", token, loader)
 
 
+@app.get("/api/shop/test-diagnose-assortment")
+async def _test_diagnose_assortment(token: str = Depends(get_current_token)):
+    """VAQTINCHALIK diagnostika (2026-08-29) — faqat o'qiydi, hech narsa
+    yaratmaydi/o'zgartirmaydi. Katalogning TO'LIQ (ko'p sahifali) yuklanishi
+    aynan qayerda va nima uchun osilib qolayotganini aniqlash uchun: MoySklad
+    "entity/assortment"'idan FAQAT bitta, kichik (limit=5) sahifani so'raydi
+    va aniq vaqtni o'lchaydi — agar bu ham sekin bo'lsa, muammo MoySklad'ning
+    o'zida (bugun); tez bo'lsa, muammo bizning ko'p-sahifali yuklash
+    mantig'imizda. Tekshirilgach OLIB TASHLANADI."""
+    import time as _time
+    t0 = _time.monotonic()
+    try:
+        data = await ms_request("GET", "/entity/assortment", token=token, params={"limit": 5}, timeout=20.0)
+        elapsed = _time.monotonic() - t0
+        return {
+            "elapsed_seconds": round(elapsed, 2),
+            "total_size": (data or {}).get("meta", {}).get("size"),
+            "rows_returned": len(((data or {}).get("rows") or [])),
+        }
+    except Exception as exc:
+        elapsed = _time.monotonic() - t0
+        return {"elapsed_seconds": round(elapsed, 2), "error": str(exc)}
+
+
 @app.get("/api/currencies")
 async def get_currencies(token: str = Depends(get_current_token)):
     """Tashkilotda sozlangan barcha valyutalarni qaytaradi (masalan so'm, dollar, rubl —
