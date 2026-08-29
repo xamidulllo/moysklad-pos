@@ -597,25 +597,29 @@ async def get_context(token: str = Depends(get_current_token)):
 @app.get("/api/shop/test-diagnose-assortment")
 async def _test_diagnose_assortment(token: str = Depends(get_current_token)):
     """VAQTINCHALIK diagnostika (2026-08-29) — faqat o'qiydi, hech narsa
-    yaratmaydi/o'zgartirmaydi. Katalogning TO'LIQ (ko'p sahifali) yuklanishi
-    aynan qayerda va nima uchun osilib qolayotganini aniqlash uchun: MoySklad
-    "entity/assortment"'idan FAQAT bitta, kichik (limit=5) sahifani so'raydi
-    va aniq vaqtni o'lchaydi — agar bu ham sekin bo'lsa, muammo MoySklad'ning
-    o'zida (bugun); tez bo'lsa, muammo bizning ko'p-sahifali yuklash
-    mantig'imizda. Tekshirilgach OLIB TASHLANADI."""
+    yaratmaydi/o'zgartirmaydi. Katalogni to'liq yuklashning HAR BIR alohida
+    qadamini (Sheets suratlanmasini o'qish, to'liq tovar ro'yxati, to'liq
+    mijozlar ro'yxati) ALOHIDA o'lchaydi — shunda aynan qaysi qadam osilib
+    qolayotgani aniq ko'rinadi. Har bir qadamga o'zining xavfsizlik
+    muddati bor, shu sabab bu marshrutning o'zi hech qachon abadiy
+    osilib qolmaydi. Tekshirilgach OLIB TASHLANADI."""
     import time as _time
-    t0 = _time.monotonic()
-    try:
-        data = await ms_request("GET", "/entity/assortment", token=token, params={"limit": 5}, timeout=20.0)
-        elapsed = _time.monotonic() - t0
-        return {
-            "elapsed_seconds": round(elapsed, 2),
-            "total_size": (data or {}).get("meta", {}).get("size"),
-            "rows_returned": len(((data or {}).get("rows") or [])),
-        }
-    except Exception as exc:
-        elapsed = _time.monotonic() - t0
-        return {"elapsed_seconds": round(elapsed, 2), "error": str(exc)}
+    result: dict = {}
+
+    async def _timed(name: str, coro, timeout: float):
+        t0 = _time.monotonic()
+        try:
+            value = await asyncio.wait_for(coro, timeout=timeout)
+            result[name] = {"elapsed_seconds": round(_time.monotonic() - t0, 2), "count": len(value) if value is not None else None}
+        except Exception as exc:
+            result[name] = {"elapsed_seconds": round(_time.monotonic() - t0, 2), "error": f"{type(exc).__name__}: {exc}"}
+
+    await _timed("sheets_catalog_snapshot", sheets_client.load_catalog_snapshot(), 15.0)
+    await _timed("sheets_customers_snapshot", sheets_client.load_customers_snapshot(), 15.0)
+    await _timed("full_assortment_fetch", catalog_cache._fetch_all("/entity/assortment", token, page_size=1000), 90.0)
+    await _timed("full_counterparty_fetch", catalog_cache._fetch_all("/entity/counterparty", token), 90.0)
+
+    return result
 
 
 @app.get("/api/currencies")
