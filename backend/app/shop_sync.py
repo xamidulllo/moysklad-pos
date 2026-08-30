@@ -481,6 +481,26 @@ async def _sync_one_business_day(business_day: str, rows: list, token: str) -> d
                     last_error=str(exc.detail),
                 )
                 return {"business_day": business_day, "outcome": "failed", "rows": 0}
+            except Exception as exc:
+                # MUHIM (real productionda 2026-08-30'da topilgan xato): bu
+                # yerda avval FAQAT yuqoridagi uchta xato turi ushlanardi —
+                # boshqa har qanday kutilmagan xatolik (masalan Google
+                # Sheets'ning o'zidagi vaqtinchalik xatolik, final holatni
+                # yozish paytida) butunlay ushlanmasdan yuqoriga o'tib
+                # ketardi, qator "syncing"da ABADIY, hech qanday xato
+                # matnisiz qotib qolardi (aynan shu holat kuzatilgan — zakaz
+                # yaratilgan, lekin natija hech qayerga yozilmagan). Endi bu
+                # ham "qo'lda tekshirish" sifatida belgilanadi — hech
+                # bo'lmasa SABABI ko'rinadi, va avtomatik qayta urinish
+                # (ehtimol dublikat yaratib qo'yishi mumkin bo'lgan holatda)
+                # xavfsiz TAQIQLANADI.
+                logger.exception("Kunlik zakaz/otgruzka yaratishda kutilmagan xatolik (kun: %s)", business_day)
+                await sheets_client.update_daily_order(
+                    business_day,
+                    status=sheets_client.DAILY_STATUS_NEEDS_MANUAL_CHECK,
+                    last_error=f"Kutilmagan xatolik: {exc}",
+                )
+                return {"business_day": business_day, "outcome": "needs_manual_check", "rows": 0}
         # Qayta yuklaymiz — claimed=True bo'lsa yangi holatni, False bo'lsa
         # boshqa parallel jarayon o'zgartirgan haqiqiy holatni olish uchun.
         daily = await sheets_client.get_daily_order(business_day)
