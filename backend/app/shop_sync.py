@@ -38,10 +38,12 @@ from . import sheets_client, stock_cache
 from .cache import _cached
 from .checkout_chain import (
     RollbackFailedError,
+    _get_default_currency_id,
     _get_pos_sales_channel_meta,
     _get_required_order_attributes,
 )
 from .config import (
+    DEFAULT_EXCHANGE_RATE,
     MOYSKLAD_BASE_URL,
     SHOP_AGENT_NAME,
     SHOP_CHANGE_EXPENSE_ARTICLE_NAME,
@@ -52,7 +54,7 @@ from .config import (
 from .moysklad_client import ms_request, ms_request_resilient
 from .schemas import CheckoutRequest
 from .sync_job import get_shared_admin_token
-from .utils import _to_minor_units
+from .utils import _id_from_href, _to_minor_units
 
 logger = logging.getLogger("moysklad_pos.shop_sync")
 
@@ -146,6 +148,43 @@ async def _get_change_expense_article_meta(token: str) -> "dict | None":
     return result["meta"]
 
 
+async def _get_som_currency_meta(token: str) -> "dict | None":
+    async def loader():
+        data = await ms_request_resilient("GET", "/entity/currency", token=token, params={"limit": 100})
+        match = next((r for r in data.get("rows", []) if r.get("isoCode") == "UZS"), None)
+        return {"meta": match["meta"] if match else None}
+
+    result = await _cached("shop_som_currency_meta", token, loader)
+    return result["meta"]
+
+
+async def _get_daily_order_rate(token: str) -> "dict | None":
+    """Kunlik zakaz/otgruzka VA ularga bog'langan har bir to'lov qat'iy
+    ravishda SO'MDA bo'lishi kerak (barcha narxlar allaqachon so'mga
+    o'girib qo'yilgan — _row_positions'ga qarang). Lekin bu — tashkilotning
+    BAZAVIY (учетная) valyutasi bilan bir xil degani EMAS.
+
+    MUHIM (real productionda 2026-08-30'da topilgan xato): bu hisobda
+    bazaviy valyuta aslida AQSH DOLLARI ekan (so'm emas, avvalgi noto'g'ri
+    taxmin). "rate" maydoni umuman ko'rsatilmasa, MoySklad hujjatni
+    o'zining standart (bazaviy, ya'ni DOLLAR) valyutasida yaratadi —
+    natijada allaqachon so'mga o'girilgan narxlar xato ravishda DOLLAR
+    sifatida talqin qilinib, kurs koeffitsiyenti (masalan 12000) baravar
+    KATTA summa hosil bo'ladi (real hisobda $2 400 000 026 kabi mutlaqo
+    noto'g'ri zakaz shu sabab yaratilgan edi). Shu sabab bu yerda ANIQ,
+    to'g'ridan-to'g'ri so'm valyutasi "rate" sifatida belgilanadi — agar
+    so'm aynan bazaviy valyutaning O'ZI bo'lsa (boshqa hisobda shunday
+    bo'lishi mumkin), hech qanday rate kerak emas (aks holda xato 3007)."""
+    som_meta = await _get_som_currency_meta(token)
+    if not som_meta:
+        return None
+    default_currency_id = await _get_default_currency_id(token)
+    som_currency_id = _id_from_href(som_meta["href"])
+    if som_currency_id == default_currency_id:
+        return None
+    return {"value": 1 / DEFAULT_EXCHANGE_RATE, "currency": {"meta": som_meta}}
+
+
 def _row_positions(row: dict) -> list:
     """Bitta Sheets qatoridagi payload_json'dan MoySklad "positions" ro'yxatini
     quradi. MUHIM: umumiy kunlik zakaz har doim tashkilotning BAZAVIY
@@ -187,6 +226,8 @@ async def _create_daily_order_and_demand(business_day: str, rows: list, token: s
     for row in rows:
         positions.extend(_row_positions(row))
 
+    daily_rate = await _get_daily_order_rate(token)
+
     order_body = {
         "organization": {"meta": org_meta},
         "agent": {"meta": agent_meta},
@@ -196,6 +237,8 @@ async def _create_daily_order_and_demand(business_day: str, rows: list, token: s
         "salesChannel": {"meta": await _get_pos_sales_channel_meta(token)},
         "description": f"Do'kon kunlik zakaz — {business_day}",
     }
+    if daily_rate:
+        order_body["rate"] = daily_rate
     if project_meta:
         order_body["project"] = {"meta": project_meta}
     required_attrs = await _get_required_order_attributes(token)
@@ -223,6 +266,8 @@ async def _create_daily_order_and_demand(business_day: str, rows: list, token: s
         "applicable": True,
         "customerOrder": {"meta": order["meta"]},
     }
+    if daily_rate:
+        demand_body["rate"] = daily_rate
     if project_meta:
         demand_body["project"] = {"meta": project_meta}
     try:
@@ -291,6 +336,13 @@ async def _sync_row_payment(row: dict, daily_order: dict, token: str) -> str:
     }
     agent_meta = await _get_shop_agent_meta(token)
     row_sum_minor = _to_minor_units(sum(i.price * i.quantity for i in payload.items))
+    # MUHIM (real productionda 2026-08-30'da topilgan xato, order/demand'dagi
+    # bilan bir xil sabab): bu hisobning bazaviy valyutasi AQSH dollari, so'm
+    # emas — shu sabab har bir to'lov (va "Qaytim" chiqimi) ham ANIQ so'm
+    # valyutasi bilan belgilanishi kerak, aks holda MoySklad ularni standart
+    # (dollar) valyutada yaratib, allaqachon so'mga o'girilgan summani xato
+    # ravishda dollar sifatida talqin qilib qo'yadi.
+    daily_rate = await _get_daily_order_rate(token)
 
     try:
         if payload.is_debt:
@@ -299,15 +351,11 @@ async def _sync_row_payment(row: dict, daily_order: dict, token: str) -> str:
             # Chet el valyutasida naqd + so'mda qaytim oqimi (foydalanuvchi
             # bilan tasdiqlangan 4-qaror): TO'LIQ berilgan summa daromad
             # sifatida, zakazga TO'LIQ bog'langan holda yoziladi; qaytim esa
-            # ALOHIDA, zakazga bog'lanmagan chiqim hujjati sifatida.
-            # MUHIM (real MoySklad API'da tekshirilgan): to'lov hujjati
-            # BAZAVIY valyutadagi (so'm) umumiy kunlik zakazga bog'lanadi —
-            # MoySklad "rate.value != 1" bilan chet el valyutasidagi to'lovni
-            # bazaviy valyutadagi zakazga bog'lashni RAD ETADI (xato 3007,
-            # "Нельзя задать курс валюты учета, отличный от 1"). Shu sabab
-            # to'lov ham SO'MDA (berilgan summa * exchange_rate) yoziladi —
-            # jismoniy $ qabul qilingani payload.cash_given_amount'da o'z
-            # holicha saqlanadi, faqat MoySklad hujjatining o'zi so'mda.
+            # ALOHIDA, zakazga bog'lanmagan chiqim hujjati sifatida. To'lov
+            # hujjati ANIQ so'm valyutasidagi (order/demand bilan bir xil
+            # "rate") umumiy kunlik zakazga bog'lanadi — jismoniy $ qabul
+            # qilingani payload.cash_given_amount'da o'z holicha saqlanadi,
+            # faqat MoySklad hujjatining o'zi so'mda.
             given_in_som = (
                 payload.cash_given_amount * payload.exchange_rate
                 if payload.currency_meta and payload.exchange_rate
@@ -322,6 +370,8 @@ async def _sync_row_payment(row: dict, daily_order: dict, token: str) -> str:
                 "organizationAccount": {"meta": payload.account_meta},
                 "operations": [{"meta": order_meta, "linkedSum": given_minor}],
             }
+            if daily_rate:
+                payment_body["rate"] = daily_rate
             if payload.payment_moment:
                 payment_body["moment"] = payload.payment_moment
             endpoint = "/entity/cashin" if payload.document_type == "cashin" else "/entity/paymentin"
@@ -340,6 +390,8 @@ async def _sync_row_payment(row: dict, daily_order: dict, token: str) -> str:
                     "sum": _to_minor_units(payload.cash_change_som),
                     "organizationAccount": {"meta": change_account_meta},
                 }
+                if daily_rate:
+                    cashout_body["rate"] = daily_rate
                 if article_meta:
                     cashout_body["expenseItem"] = {"meta": article_meta}
                 await ms_request(
@@ -354,6 +406,8 @@ async def _sync_row_payment(row: dict, daily_order: dict, token: str) -> str:
                 "organizationAccount": {"meta": payload.account_meta},
                 "operations": [{"meta": order_meta, "linkedSum": row_sum_minor}],
             }
+            if daily_rate:
+                payment_body["rate"] = daily_rate
             if payload.payment_moment:
                 payment_body["moment"] = payload.payment_moment
             endpoint = "/entity/cashin" if payload.document_type == "cashin" else "/entity/paymentin"
