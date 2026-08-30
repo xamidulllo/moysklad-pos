@@ -294,6 +294,22 @@ function defaultCurrency() {
   return state.currencies.find((c) => c.is_default) || null;
 }
 
+// MUHIM (real productionda 2026-08-30'da topilgan xato): tashkilotning
+// MoySklad'dagi "bazaviy" valyutasi (defaultCurrency()) HAQIQATDA dollar
+// ekan, so'm emas — lekin Do'kon'ning kunlik birlashtirilgan hisoboti
+// (backend'dagi shop_sync.py) DOIM SO'MDA yaratiladi (bu — biznes qarori,
+// MoySklad'ning texnik "bazaviy valyuta" belgisiga bog'liq emas). Checkout
+// paytida "bu qator konvertatsiya kerakmi" degan savol "savat valyutasi
+// tashkilotning bazaviysidanmi farq qiladi" emas, balki "savat valyutasi
+// SO'M EMASMI" bo'lishi kerak — aks holda ikkalasi ham TESKARI natija
+// berardi (so'm bilan sotilgan tovar noto'g'ri "konvertatsiya kerak" deb
+// belgilanib 12000 baravar oshirilib yuborilardi, dollar bilan sotilgan
+// tovar esa "konvertatsiya kerak emas" deb qolib, so'mga umuman
+// o'girilmasdan qolib ketardi — ikkalasi ham real hisobda tasdiqlangan).
+function somCurrency() {
+  return state.currencies.find((c) => c.iso_code === "UZS") || null;
+}
+
 function currencyById(id) {
   return state.currencies.find((c) => c.id === id) || null;
 }
@@ -656,12 +672,14 @@ function fillAccountSelect() {
 }
 
 // Mijoz chet el valyutasida (masalan $) naqd berib, so'mda qaytim olishi
-// mumkin bo'lgan holat — faqat tanlangan shot BAZAVIY bo'lmagan valyutada
-// bo'lsa ko'rsatiladi (backend'ning /api/accounts javobidagi "is_base_currency").
+// mumkin bo'lgan holat — faqat tanlangan shot SO'M BO'LMAGAN valyutada
+// bo'lsa ko'rsatiladi (backend'ning /api/accounts javobidagi "is_som_currency" —
+// 2026-08-30'da "is_base_currency"dan almashtirildi, chunki tashkilotning
+// texnik bazaviy valyutasi haqiqatda dollar ekan, so'm emas).
 function updateCashChangeVisibility() {
   const group = document.getElementById("cashChangeGroup");
   if (!group) return;
-  const isForeignAccount = Boolean(state.selectedAccount) && state.selectedAccount.is_base_currency === false;
+  const isForeignAccount = Boolean(state.selectedAccount) && state.selectedAccount.is_som_currency === false;
   group.classList.toggle("hidden", !isForeignAccount);
   if (!isForeignAccount) {
     document.getElementById("cashGivenInput").value = "";
@@ -699,12 +717,19 @@ async function handlePay() {
     return;
   }
 
-  // MUHIM: savat valyutasi bazaviydan farq qilsa, kurs ALBATTA kiritilgan bo'lishi
+  // MUHIM: savat valyutasi SO'M BO'LMASA, kurs ALBATTA kiritilgan bo'lishi
   // shart — aks holda jim ravishda 1:1 deb hisoblanib, butunlay noto'g'ri summa
   // (masalan 90 000 so'm o'rniga 90 000 dollar) yuborilib qolardi. Shu sabab bu
   // holatda checkout to'liq bloklanadi, hech qachon standart qiymatga tushmaydi.
-  const def = defaultCurrency();
-  const cartCurrencyIsForeign = Boolean(def) && state.cartCurrencyId !== def.id;
+  //
+  // MUHIM (2026-08-30'da tuzatilgan): bu yerda ANIQ so'm bilan solishtirish
+  // kerak — tashkilotning "bazaviy" (defaultCurrency()) valyutasi bilan EMAS
+  // (real hisobda bular bir xil emas: bazaviy = dollar). Do'kon'ning kunlik
+  // hisoboti doim so'mda yaratiladi (somCurrency()'ga qarang) — backend'ga
+  // aynan shu "savat so'm emasmi" ma'lumoti kerak, "savat bazaviy emasmi"
+  // emas.
+  const som = somCurrency();
+  const cartCurrencyIsForeign = Boolean(som) && state.cartCurrencyId !== som.id;
   if (cartCurrencyIsForeign && !(state.cartRate > 0)) {
     showToast("Savat ekranida kursni kiriting", true);
     return;
@@ -731,7 +756,7 @@ async function handlePay() {
     // navbatiga yozsa, MoySklad'ga qo'shimcha so'rov yubormasdan qatorni
     // odam o'qiy oladigan qilish uchun ishlatiladi.
     store_name: state.selectedStore.name,
-    currency_name: (cartCurrencyIsForeign && cartCurrency ? cartCurrency : defaultCurrency())?.name ?? null,
+    currency_name: (cartCurrencyIsForeign && cartCurrency ? cartCurrency : som)?.name ?? null,
   };
 
   if (!isDebt) {

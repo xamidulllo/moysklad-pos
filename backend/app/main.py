@@ -45,7 +45,7 @@ from . import catalog_cache, sheets_client, shop_sync, stock_cache, sync_job
 from .auth import create_session, delete_session, get_current_session, get_current_token, require_sync_secret
 from .bot import start_bot, stop_bot
 from .cache import _cached
-from .checkout_chain import _get_default_currency_id, _get_pos_sales_channel_meta, execute_checkout_chain
+from .checkout_chain import _get_pos_sales_channel_meta, execute_checkout_chain
 from .config import (
     CHECKOUT_MODE,
     DEFAULT_EXCHANGE_RATE,
@@ -207,6 +207,25 @@ async def _get_default_price_type_id(token: str) -> "str | None":
         return {"id": match["id"] if match else None}
 
     result = await _cached("default_price_type", token, loader)
+    return result["id"]
+
+
+async def _get_som_currency_id(token: str) -> "str | None":
+    """MUHIM (real productionda 2026-08-30'da topilgan xato): tashkilotning
+    MoySklad'dagi "bazaviy" valyutasi (get_currencies/is_default) HAQIQATDA
+    dollar ekan, so'm emas. Lekin Do'kon rejimida "chet el naqd + so'mda
+    qaytim" oqimi (frontend'dagi cash-given/change maydonlari) aynan SO'M
+    BO'LMAGAN hisob tanlanganda ko'rsatilishi kerak — bu tashkilotning
+    texnik bazaviy valyutasiga emas, balki ANIQ so'mga bog'liq bo'lishi
+    kerak. Shu sabab hisob "bazaviy valyutadami" emas, "so'mdami" deb
+    tekshiriladi (get_accounts()'ga qarang)."""
+
+    async def loader():
+        data = await ms_request_resilient("GET", "/entity/currency", token=token, params={"limit": 100})
+        match = next((r for r in data.get("rows", []) if r.get("isoCode") == "UZS"), None)
+        return {"id": match["id"] if match else None}
+
+    result = await _cached("som_currency_id", token, loader)
     return result["id"]
 
 
@@ -569,8 +588,8 @@ async def get_accounts(token: str = Depends(get_current_token)):
         # javob berib qolgani sabab, 2 ta tashkilot bo'lganda bu ikki
         # baravar ko'proq kutishga olib kelardi (jonli o'lchashda 48
         # soniya). Endi hammasi PARALLEL (bir vaqtda) so'raladi.
-        default_currency_id, orgs = await asyncio.gather(
-            _get_default_currency_id(token),
+        som_currency_id, orgs = await asyncio.gather(
+            _get_som_currency_id(token),
             ms_request_resilient("GET", "/entity/organization", token=token, params={"limit": 100}),
         )
         org_rows = orgs.get("rows", [])
@@ -599,8 +618,13 @@ async def get_accounts(token: str = Depends(get_current_token)):
                         "is_default": row.get("isDefault", False),
                         "guessed_type": guessed_type,
                         "currency": currency,
-                        # Bazaviy valyutadagi hisoblarda qo'lda kurs kiritib bo'lmaydi (MoySklad xato 3007)
-                        "is_base_currency": currency_id == default_currency_id,
+                        # MUHIM (2026-08-30'da tuzatilgan): bu ATAYLAB tashkilotning
+                        # MoySklad'dagi texnik "bazaviy valyuta" belgisiga EMAS, balki
+                        # ANIQ so'mga solishtiriladi — Do'kon uchun "chet el naqd + so'mda
+                        # qaytim" oqimi so'm BO'LMAGAN hisob tanlanganda kerak, tashkilot
+                        # qaysi valyutani "bazaviy" deb belgilashidan qat'i nazar (real
+                        # hisobda bular bir xil emas ekani aniqlangan: bazaviy = dollar).
+                        "is_som_currency": currency_id == som_currency_id,
                         "organization_id": org_id,
                     }
                 )
