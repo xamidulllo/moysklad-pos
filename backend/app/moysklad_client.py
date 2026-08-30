@@ -116,8 +116,30 @@ async def exchange_credentials_for_token(login: str, password: str) -> str:
     Haqiqiy MoySklad hisobida tekshirilgan: POST /security/token + Basic auth
     (login, password) -> 201 {"access_token": "..."}. Noto'g'ri parolda MoySklad
     401 qaytaradi — shu status va xabar o'zgarishsiz frontend'ga uzatiladi.
-    """
-    response = await _get_client().post("/security/token", auth=(login, password), timeout=20.0)
+
+    MUHIM (2026-08-29): bu chaqiruv endi ilovaning YAGONA umumiy tokenini
+    olish uchun ishlatiladi (sync_job.get_shared_admin_token) — login
+    tugmasi bosilgach, HAR QANDAY ma'lumot (ombor, hisob, katalog)
+    yuklanishidan OLDIN, birinchi bo'lib shu ishlaydi. Avval bu yerda
+    hech qanday qayta urinish himoyasi yo'q edi — MoySklad'ning
+    "/security/token"i ham (boshqa so'rovlar kabi) vaqti-vaqti bilan
+    sekinlashib qolishi mumkinligi sabab, shu YAGONA himoyasiz qadam
+    kirishdan keyingi BUTUN ekranni to'xtatib qo'yishi mumkin edi — shu
+    sabab endi bu ham vaqtinchalik tarmoq xatolariga chidamli."""
+    last_exc: "Exception | None" = None
+    for attempt in range(3):
+        try:
+            response = await _get_client().post("/security/token", auth=(login, password), timeout=30.0)
+            break
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_exc = exc
+            logger.warning(
+                "MoySklad token almashinuvida vaqtinchalik xatolik (urinish %d/3): %s", attempt + 1, exc
+            )
+            if attempt < 2:
+                await asyncio.sleep(2.0 * (attempt + 1))
+    else:
+        raise last_exc
 
     if response.status_code >= 400:
         try:
