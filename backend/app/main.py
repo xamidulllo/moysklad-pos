@@ -600,6 +600,23 @@ async def get_context(token: str = Depends(get_current_token)):
     return await _cached("context", token, loader)
 
 
+@app.get("/api/shop/test-diagnose-counterparty-count")
+async def _test_diagnose_counterparty_count(token: str = Depends(get_current_token)):
+    """VAQTINCHALIK diagnostika (2026-08-29) — faqat o'qiydi. Mijozlar
+    (entity/counterparty) jami nechta ekanini bitta kichik (limit=1)
+    so'rov bilan tekshiradi — agar bu son juda katta bo'lsa, to'liq
+    ro'yxatni oldindan yuklab olish (hozirgi katalog-kesh yondashuvi)
+    umuman noto'g'ri strategiya bo'lishi mumkin. Tekshirilgach OLIB
+    TASHLANADI."""
+    import time as _time
+    t0 = _time.monotonic()
+    try:
+        data = await ms_request("GET", "/entity/counterparty", token=token, params={"limit": 1}, timeout=20.0)
+        return {"elapsed_seconds": round(_time.monotonic() - t0, 2), "total_size": (data or {}).get("meta", {}).get("size")}
+    except Exception as exc:
+        return {"elapsed_seconds": round(_time.monotonic() - t0, 2), "error": f"{type(exc).__name__}: {exc}"}
+
+
 @app.get("/api/currencies")
 async def get_currencies(token: str = Depends(get_current_token)):
     """Tashkilotda sozlangan barcha valyutalarni qaytaradi (masalan so'm, dollar, rubl —
@@ -661,6 +678,25 @@ def _stock_cache_items(items) -> list[tuple[str, float]]:
     ]
 
 
+async def _append_pending_order_or_503(**kwargs) -> None:
+    """`sheets_client.append_pending_order`'ni chaqiradi, lekin Sheets bilan
+    bog'liq xatoni (masalan Google ruxsat tokeni muddati tugagani —
+    "invalid_grant") kassirga tushunarsiz xato sifatida ko'rsatish o'rniga
+    ANIQ, harakat qilsa bo'ladigan xabarga aylantiradi. MUHIM: Do'kon
+    rejimida checkout HAR DOIM avval shu yerga yozadi — shu sabab bu yerdagi
+    xato butun buyurtmani to'xtatib qo'yadi (2026-08-29'da real productionda
+    aynan shu sabab — Google tokeni bekor bo'lgani uchun — buyurtma
+    yakunlanmagan holat kuzatilgan)."""
+    try:
+        await sheets_client.append_pending_order(**kwargs)
+    except Exception as exc:
+        logger.exception("Buyurtmani Sheets navbatiga yozib bo'lmadi")
+        raise HTTPException(
+            status_code=503,
+            detail="Buyurtmani saqlab bo'lmadi — Google Sheets bilan bog'lanishda muammo bor. Administratorga xabar bering.",
+        ) from exc
+
+
 @app.post("/api/checkout")
 async def checkout(payload: CheckoutRequest, session: dict = Depends(get_current_session)):
     if not payload.items:
@@ -678,7 +714,7 @@ async def checkout(payload: CheckoutRequest, session: dict = Depends(get_current
         store_id = _id_from_href((payload.store_meta or {}).get("href", ""))
         business_day = business_day_key(now_in_shop_tz())
 
-        await sheets_client.append_pending_order(
+        await _append_pending_order_or_503(
             order_id=order_id,
             cashier_name=session["employee_name"],
             store_id=store_id,
@@ -708,7 +744,7 @@ async def checkout(payload: CheckoutRequest, session: dict = Depends(get_current
     order_id = str(uuid4())
     store_id = _id_from_href((payload.store_meta or {}).get("href", ""))
 
-    await sheets_client.append_pending_order(
+    await _append_pending_order_or_503(
         order_id=order_id,
         cashier_name=session["employee_name"],
         store_id=store_id,
