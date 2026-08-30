@@ -691,6 +691,16 @@ async def _test_daily_order_status(business_day: str, _: dict = Depends(get_curr
     return {"business_day": business_day, "daily_order": daily}
 
 
+@app.get("/api/shop/test-sheets-link")
+async def _test_sheets_link(_: dict = Depends(get_current_session)):
+    """VAQTINCHALIK (2026-08-30) — foydalanuvchi so'ragan Google Sheets
+    havolasini qaytaradi (ID — maxfiy emas, egasi allaqachon to'liq
+    huquqqa ega). Tekshirilgach OLIB TASHLANADI."""
+    if not GOOGLE_SHEETS_SPREADSHEET_ID:
+        return {"error": "GOOGLE_SHEETS_SPREADSHEET_ID sozlanmagan"}
+    return {"url": f"https://docs.google.com/spreadsheets/d/{GOOGLE_SHEETS_SPREADSHEET_ID}/edit"}
+
+
 @app.post("/api/shop/test-reset-daily-order")
 async def _test_reset_daily_order(business_day: str, _: dict = Depends(get_current_session)):
     """VAQTINCHALIK, BIR MARTALIK tuzatish (2026-08-30) — hech qanday
