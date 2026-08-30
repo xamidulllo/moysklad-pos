@@ -13,6 +13,7 @@ MoySklad'ga tegishdan OLDIN halok bo'lish (xavfsiz qayta urinish) bilan
 tegishdan KEYIN/vaqtida halok bo'lish (natija noaniq, avtomatik qayta
 urinish TAQIQLANADI) farqlanadi.
 """
+import asyncio
 import json
 import logging
 import time
@@ -40,20 +41,48 @@ _running = False
 # token so'raladi.
 _shared_admin_token_cache: "tuple[float, str] | None" = None
 SHARED_ADMIN_TOKEN_TTL_SECONDS = 600
+# MUHIM (real productionda 2026-08-29'da topilgan poyga sharoiti — race
+# condition): bu funksiya avval hech qanday qulfsiz (lock) edi. Agar IKKI
+# so'rov BIR VAQTDA (masalan server ishga tushgandagi fon "isitish" vazifasi
+# VA aynan shu paytda kirgan kassirning so'rovi) keshning eskirganini ko'rib,
+# IKKALASI HAM mustaqil ravishda MoySklad'dan yangi token so'rasa —
+# MoySklad bir login uchun faqat bitta faol tokenni saqlagani sabab, ikkinchi
+# bo'lib qaytgan chaqiruv birinchisining tokenini DARHOL bekor qilib qo'yardi.
+# Natijada birinchi chaqiruvchi hali oldingi (endi bekor qilingan) tokenni
+# ishlatib, keyingi so'rovda 401 olardi — aynan shu holat jonli productionda
+# (og'ir/uzoq davom etadigan so'rovlar paytida, masalan katalogni to'liq
+# yuklash chog'ida) kuzatildi. Endi qulf orqali BIR VAQTNING o'zida faqat
+# BITTA haqiqiy MoySklad chaqiruvi ketishi, qolganlari esa shu chaqiruv
+# natijasini kutib, QAYTA ISHLATISHI ta'minlanadi.
+_token_lock = asyncio.Lock()
 
 
 async def get_shared_admin_token(force_refresh: bool = False) -> str:
     global _shared_admin_token_cache
-    now = time.time()
-    if (
-        not force_refresh
-        and _shared_admin_token_cache
-        and now - _shared_admin_token_cache[0] < SHARED_ADMIN_TOKEN_TTL_SECONDS
-    ):
-        return _shared_admin_token_cache[1]
-    token = await exchange_credentials_for_token(MS_SYNC_LOGIN, MS_SYNC_PASSWORD)
-    _shared_admin_token_cache = (now, token)
-    return token
+
+    def _cached_and_fresh() -> "str | None":
+        if (
+            not force_refresh
+            and _shared_admin_token_cache
+            and time.time() - _shared_admin_token_cache[0] < SHARED_ADMIN_TOKEN_TTL_SECONDS
+        ):
+            return _shared_admin_token_cache[1]
+        return None
+
+    cached = _cached_and_fresh()
+    if cached is not None:
+        return cached
+
+    async with _token_lock:
+        # Qulfni kutib turgan paytda BOSHQA chaqiruvchi allaqachon yangilagan
+        # bo'lishi mumkin — shu sabab qayta tekshiramiz, yana bir marta
+        # ortiqcha MoySklad so'rovi yubormaslik uchun.
+        cached = _cached_and_fresh()
+        if cached is not None:
+            return cached
+        token = await exchange_credentials_for_token(MS_SYNC_LOGIN, MS_SYNC_PASSWORD)
+        _shared_admin_token_cache = (time.time(), token)
+        return token
 
 
 def _format_http_error(exc: HTTPException) -> str:
