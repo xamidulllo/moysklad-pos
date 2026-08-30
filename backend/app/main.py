@@ -691,6 +691,25 @@ async def _test_daily_order_status(business_day: str, _: dict = Depends(get_curr
     return {"business_day": business_day, "daily_order": daily}
 
 
+@app.post("/api/shop/test-reset-daily-order")
+async def _test_reset_daily_order(business_day: str, _: dict = Depends(get_current_session)):
+    """VAQTINCHALIK, BIR MARTALIK tuzatish (2026-08-30) — hech qanday
+    MoySklad hujjatiga TEGMAYDI, faqat Google Sheets'dagi "DailyOrders"
+    kuzatuv qatorini "pending"ga qaytaradi. FAQAT foydalanuvchi MoySklad'da
+    tegishli eski zakazni QO'LDA o'chirib tashlaganini tasdiqlagandan
+    keyin chaqirilishi kerak. Ishlatilgach OLIB TASHLANADI."""
+    daily = await sheets_client.get_daily_order(business_day)
+    if daily is None:
+        raise HTTPException(status_code=404, detail="Bunday ish kuni topilmadi")
+    await sheets_client.update_daily_order(
+        business_day,
+        status=sheets_client.DAILY_STATUS_PENDING,
+        chain_started_at="",
+        last_error="",
+    )
+    return {"business_day": business_day, "reset": True}
+
+
 @app.get("/api/shop/settings")
 async def get_shop_settings(_: dict = Depends(get_current_session)):
     """Do'kon rejimi uchun standart sozlamalar — hozircha faqat standart
