@@ -121,6 +121,26 @@ async def lifespan(app: FastAPI):
         catalog_cache._background_tasks.add(warm_task)
         warm_task.add_done_callback(catalog_cache._background_tasks.discard)
 
+        # MUHIM (real productionda 2026-08-29'da tasdiqlangan): "Kirish"dan
+        # keyin darhol kerak bo'ladigan /api/accounts, /api/context,
+        # /api/currencies HAM (o'zlari kichik so'rovlar bo'lsa-da) MoySklad'ning
+        # vaqti-vaqti bilan sekinlashishi tufayli bitta so'rov 40+ soniya
+        # cho'zilishi kuzatilgan — bu esa kirgandan keyingi ekranni to'liq
+        # to'xtatib qo'yardi. Bular ham 1 soatlik keshga ega (cache.py) bo'lgani
+        # uchun, xuddi katalog kabi, server ishga tushganda fonda oldindan
+        # "isitib" qo'yiladi — birinchi haqiqiy kassir bu narxni to'lamasin.
+        async def _warm_shop_metadata():
+            try:
+                token = await sync_job.get_shared_admin_token()
+                await asyncio.gather(get_accounts(token), get_context(token), get_currencies(token))
+                logger.info("Hisoblar/tashkilotlar/valyutalar oldindan isitildi")
+            except Exception:
+                logger.exception("Hisoblar/tashkilotlar/valyutalarni oldindan isitib bo'lmadi — birinchi kirish sekinroq bo'lishi mumkin")
+
+        meta_warm_task = asyncio.create_task(_warm_shop_metadata())
+        catalog_cache._background_tasks.add(meta_warm_task)
+        meta_warm_task.add_done_callback(catalog_cache._background_tasks.discard)
+
     # Telegram bot FastAPI bilan bitta process ichida, fon vazifasi sifatida ishga
     # tushadi — BOT_TOKEN sozlanmagan bo'lsa (lokal dev), jim o'tkazib yuboriladi.
     await start_bot()
@@ -543,14 +563,28 @@ async def get_accounts(token: str = Depends(get_current_token)):
     """
 
     async def loader():
-        default_currency_id = await _get_default_currency_id(token)
-        orgs = await ms_request_resilient("GET", "/entity/organization", token=token, params={"limit": 100})
+        # MUHIM (real productionda 2026-08-29'da tasdiqlangan): bu chaqiruv
+        # avval har bir tashkilot uchun KETMA-KET (sequential) so'rov
+        # yuborardi — MoySklad ba'zan bitta oddiy so'rovga ham 40+ soniya
+        # javob berib qolgani sabab, 2 ta tashkilot bo'lganda bu ikki
+        # baravar ko'proq kutishga olib kelardi (jonli o'lchashda 48
+        # soniya). Endi hammasi PARALLEL (bir vaqtda) so'raladi.
+        default_currency_id, orgs = await asyncio.gather(
+            _get_default_currency_id(token),
+            ms_request_resilient("GET", "/entity/organization", token=token, params={"limit": 100}),
+        )
+        org_rows = orgs.get("rows", [])
+        accounts_by_org = await asyncio.gather(
+            *[
+                ms_request_resilient(
+                    "GET", f"/entity/organization/{org['id']}/accounts", token=token, params={"limit": 100}
+                )
+                for org in org_rows
+            ]
+        )
         items = []
-        for org in orgs.get("rows", []):
+        for org, accounts in zip(org_rows, accounts_by_org):
             org_id = org["id"]
-            accounts = await ms_request_resilient(
-                "GET", f"/entity/organization/{org_id}/accounts", token=token, params={"limit": 100}
-            )
             for row in accounts.get("rows", []):
                 label = row.get("bankName") or row.get("accountNumber") or "Hisob"
                 lowered = label.lower()
