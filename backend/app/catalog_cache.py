@@ -37,14 +37,18 @@ logger = logging.getLogger("moysklad_pos.catalog_cache")
 # ko'ra ancha yaxshi.
 REFRESH_INTERVAL_SECONDS = 3600
 _PAGE_SIZE = 50
-# Umumiy httpx klient standart bo'yicha 25s timeout ishlatadi (interaktiv
-# so'rovlar uchun mos — kassir tezda javob kutadi). Lekin butun katalogni
-# (o'nlab sahifa) yuklash paytida MoySklad ba'zan bitta sahifaga shuncha
-# vaqtdan ko'proq javob berishi mumkin (real productionda ReadTimeout bilan
-# tasdiqlangan) — bu yangilash fonda ketadi, kassirni kutdirmaydi, shuning
-# uchun shu bitta chaqiruv turi uchun ancha kattaroq timeout ishlatiladi.
-_BULK_TIMEOUT_SECONDS = 60.0
-_BULK_MAX_ATTEMPTS = 3
+# MUHIM (real productionda 2026-08-29'da tasdiqlangan): oldin bu yerda
+# 60 soniyalik timeout x 3 urinish (orasidagi kutish bilan ~186 soniyagacha
+# BITTA sahifa uchun) ishlatilgan edi — 44 sahifali (tovar+mijoz) to'liq
+# yuklashda ORASIDAN BIRTASI HAM shuncha sekinlashsa, butun jarayon bir necha
+# DAQIQAGA cho'zilib ketardi (jonli tasdiqlangan: 90+ soniyada ham
+# tugamagan). Oddiy sahifa normalda <1 soniyada javob berishi (bir necha
+# marta o'lchangan) hisobga olinib, endi ancha qisqaroq: bitta yomon sahifa
+# ENG KO'PI BILAN ~40 soniya ushlab turadi, undan ko'p emas — bu hali ham
+# oddiy holatdan 40 baravar ko'proq bo'shliq, lekin cheksiz kutishning
+# oldini oladi.
+_BULK_TIMEOUT_SECONDS = 20.0
+_BULK_MAX_ATTEMPTS = 2
 # MUHIM (real API'da to'g'ridan-to'g'ri o'lchab tekshirilgan): "expand=images"
 # "limit" taxminan 100 dan oshganda JIM RAVISHDA ishlamay qoladi — MoySklad
 # rasm ma'lumotini butunlay tashlab yuboradi (xato bermaydi, shunchaki "images"
