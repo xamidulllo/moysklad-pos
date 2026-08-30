@@ -658,22 +658,6 @@ async def get_currencies(token: str = Depends(get_current_token)):
     return await _cached("currencies", token, loader)
 
 
-@app.get("/api/shop/test-diagnose-sheets-auth")
-async def _test_diagnose_sheets_auth(_: dict = Depends(get_current_session)):
-    """VAQTINCHALIK diagnostika (2026-08-30) — faqat o'qiydi, MoySklad'ga
-    umuman tegmaydi. Google Sheets OAuth tokeni (yangi qo'yilgan
-    GOOGLE_OAUTH_REFRESH_TOKEN) ishlayaptimi-yo'qmi, MoySklad'ning hozirgi
-    sekinligidan mustaqil ravishda tekshiradi. Tekshirilgach OLIB
-    TASHLANADI."""
-    import time as _time
-    t0 = _time.monotonic()
-    try:
-        rows = await sheets_client.load_catalog_snapshot()
-        return {"elapsed_seconds": round(_time.monotonic() - t0, 2), "ok": True, "saqlangan_qatorlar": len(rows)}
-    except Exception as exc:
-        return {"elapsed_seconds": round(_time.monotonic() - t0, 2), "ok": False, "error": f"{type(exc).__name__}: {exc}"}
-
-
 @app.get("/api/shop/settings")
 async def get_shop_settings(_: dict = Depends(get_current_session)):
     """Do'kon rejimi uchun standart sozlamalar — hozircha faqat standart
