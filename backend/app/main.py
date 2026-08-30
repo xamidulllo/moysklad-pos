@@ -682,6 +682,15 @@ async def get_currencies(token: str = Depends(get_current_token)):
     return await _cached("currencies", token, loader)
 
 
+@app.get("/api/shop/test-daily-order-status")
+async def _test_daily_order_status(business_day: str, _: dict = Depends(get_current_session)):
+    """VAQTINCHALIK diagnostika (2026-08-30) — faqat o'qiydi. "Otgruzka
+    yo'q, to'lov yo'q" xabarining aniq sababini (xato matni, zakaz/otgruzka
+    ID'lari) ko'rish uchun. Tekshirilgach OLIB TASHLANADI."""
+    daily = await sheets_client.get_daily_order(business_day)
+    return {"business_day": business_day, "daily_order": daily}
+
+
 @app.get("/api/shop/settings")
 async def get_shop_settings(_: dict = Depends(get_current_session)):
     """Do'kon rejimi uchun standart sozlamalar — hozircha faqat standart
