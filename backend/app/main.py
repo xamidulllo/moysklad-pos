@@ -600,23 +600,6 @@ async def get_context(token: str = Depends(get_current_token)):
     return await _cached("context", token, loader)
 
 
-@app.get("/api/shop/test-diagnose-counterparty-count")
-async def _test_diagnose_counterparty_count(token: str = Depends(get_current_token)):
-    """VAQTINCHALIK diagnostika (2026-08-29) — faqat o'qiydi. Mijozlar
-    (entity/counterparty) jami nechta ekanini bitta kichik (limit=1)
-    so'rov bilan tekshiradi — agar bu son juda katta bo'lsa, to'liq
-    ro'yxatni oldindan yuklab olish (hozirgi katalog-kesh yondashuvi)
-    umuman noto'g'ri strategiya bo'lishi mumkin. Tekshirilgach OLIB
-    TASHLANADI."""
-    import time as _time
-    t0 = _time.monotonic()
-    try:
-        data = await ms_request("GET", "/entity/counterparty", token=token, params={"limit": 1}, timeout=20.0)
-        return {"elapsed_seconds": round(_time.monotonic() - t0, 2), "total_size": (data or {}).get("meta", {}).get("size")}
-    except Exception as exc:
-        return {"elapsed_seconds": round(_time.monotonic() - t0, 2), "error": f"{type(exc).__name__}: {exc}"}
-
-
 @app.get("/api/currencies")
 async def get_currencies(token: str = Depends(get_current_token)):
     """Tashkilotda sozlangan barcha valyutalarni qaytaradi (masalan so'm, dollar, rubl —
