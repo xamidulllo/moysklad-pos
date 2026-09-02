@@ -287,30 +287,42 @@ async def _create_daily_order_and_demand(business_day: str, rows: list, token: s
     if required_attrs:
         order_body["attributes"] = required_attrs
 
-    try:
-        order = await ms_request(
-            "POST", "/entity/customerorder", token=token, json=order_body, timeout=_DOC_CREATE_TIMEOUT_SECONDS
-        )
-    except (httpx.TimeoutException, httpx.TransportError) as exc:
-        # MUHIM (real productionda 2026-08-30'da bir necha marta takrorlangan):
-        # avval bu holatda darhol "aniq emas" deb taslim bo'linardi — MoySklad
-        # esa ko'p hollarda hujjatni AYNAN shu vaqt ichida, javobni yubormasdan
-        # ulgurib yaratib qo'yar edi (real hisobda takror-takror tasdiqlangan).
-        # Natijada kassir har safar qo'lda tekshirib, Sheets holatini qo'lda
-        # tozalashga majbur bo'lardi. Endi taslim bo'lishdan OLDIN, tavsifi
-        # bo'yicha zakaz HAQIQATDA yaratilganmi tekshiriladi — topilsa, aynan
-        # o'sha zakazdan davom etiladi (qayta yaratilmaydi).
-        found_order = await _find_order_by_description(token, order_description)
-        if found_order:
-            logger.info(
-                "Zakaz yaratish so'rovi vaqt tugashi bilan uzilgan edi, lekin zakaz #%s haqiqatda yaratilgan ekan — davom etilmoqda",
-                found_order.get("name"),
+    # MUHIM (2026-08-30'da qo'shilgan): bu chaqiruv QAYTA URINISH bo'lishi ham
+    # mumkin (masalan avvalgi urinish "aniq emas" holatda to'xtab, qo'lda
+    # "pending"ga qaytarilgan bo'lsa) — shu sabab yangi zakaz yaratishdan
+    # OLDIN, shu tavsifga ega zakaz ALLAQACHON bor-yo'qligi tekshiriladi. Bu
+    # butun funksiyani necha marta qayta chaqirilsa ham DUBLIKAT zakaz
+    # yaratmaydigan (idempotent) qiladi.
+    order = await _find_order_by_description(token, order_description)
+
+    if order:
+        logger.info("Zakaz allaqachon mavjud ekan (#%s) — qayta yaratilmaydi", order.get("name"))
+    else:
+        try:
+            order = await ms_request(
+                "POST", "/entity/customerorder", token=token, json=order_body, timeout=_DOC_CREATE_TIMEOUT_SECONDS
             )
-            order = found_order
-        else:
-            raise DailyOrderAmbiguousError(
-                f"Kunlik zakaz yaratishda tarmoq xatosi (holat noaniq, qidiruvda ham topilmadi): {exc}"
-            ) from exc
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            # MUHIM (real productionda 2026-08-30'da bir necha marta
+            # takrorlangan): avval bu holatda darhol "aniq emas" deb taslim
+            # bo'linardi — MoySklad esa ko'p hollarda hujjatni AYNAN shu vaqt
+            # ichida, javobni yubormasdan ulgurib yaratib qo'yar edi (real
+            # hisobda takror-takror tasdiqlangan). Natijada kassir har safar
+            # qo'lda tekshirib, Sheets holatini qo'lda tozalashga majbur
+            # bo'lardi. Endi taslim bo'lishdan OLDIN, tavsifi bo'yicha zakaz
+            # HAQIQATDA yaratilganmi tekshiriladi — topilsa, aynan o'sha
+            # zakazdan davom etiladi (qayta yaratilmaydi).
+            found_order = await _find_order_by_description(token, order_description)
+            if found_order:
+                logger.info(
+                    "Zakaz yaratish so'rovi vaqt tugashi bilan uzilgan edi, lekin zakaz #%s haqiqatda yaratilgan ekan — davom etilmoqda",
+                    found_order.get("name"),
+                )
+                order = found_order
+            else:
+                raise DailyOrderAmbiguousError(
+                    f"Kunlik zakaz yaratishda tarmoq xatosi (holat noaniq, qidiruvda ham topilmadi): {exc}"
+                ) from exc
 
     demand_body = {
         "organization": {"meta": org_meta},
@@ -324,45 +336,56 @@ async def _create_daily_order_and_demand(business_day: str, rows: list, token: s
         demand_body["rate"] = daily_rate
     if project_meta:
         demand_body["project"] = {"meta": project_meta}
-    try:
-        demand = await ms_request(
-            "POST", "/entity/demand", token=token, json=demand_body, timeout=_DOC_CREATE_TIMEOUT_SECONDS
-        )
-    except (httpx.TimeoutException, httpx.TransportError) as exc:
-        # MUHIM (2026-08-30'da qo'shilgan, order-yaratishdagi bilan bir xil
-        # naqsh): taslim bo'lishdan OLDIN, otgruzka HAQIQATDA yaratilganmi
-        # tekshiriladi (real productionda MoySklad ko'pincha hujjatni
-        # ulgurib yaratib, faqat javobni yubormay qolgani tasdiqlangan —
-        # masalan zakaz #02340 uchun aynan shu holat kuzatilgan edi).
-        # Topilmasagina, zakazni AVTOMATIK o'chirib bo'lmaydigani uchun
-        # (agar otgruzka aslida yaratilgan bo'lib chiqsa, buzilgan holat
-        # qoldirardi) qo'lda tekshirishga yuboriladi.
-        found_demand = await _find_demand_by_order(token, order["meta"]["href"])
-        if found_demand:
-            logger.info(
-                "Otgruzka yaratish so'rovi vaqt tugashi bilan uzilgan edi, lekin otgruzka #%s haqiqatda yaratilgan ekan — davom etilmoqda",
-                found_demand.get("name"),
-            )
-            demand = found_demand
-        else:
-            raise DailyOrderAmbiguousError(
-                f"Kunlik otgruzka yaratishda tarmoq xatosi (holat noaniq, qidiruvda ham topilmadi, zakaz #{order.get('name')}): {exc}"
-            ) from exc
-    except HTTPException:
-        # MoySklad'ning O'ZI aniq rad etdi (tarmoq xatosi emas) — zakaz
-        # haqiqatda yaratilgani aniq, endi hech narsaga bog'lanmagan holda
-        # qolmasligi uchun xavfsiz orqaga qaytariladi.
+
+    # MUHIM (2026-08-30'da qo'shilgan, zakaz uchun ishlatilgan bilan bir xil
+    # naqsh): agar zakaz endi topilgan bo'lsa (yuqoridagi qadam), unga
+    # bog'langan otgruzka ALLAQACHON bor-yo'qligi ham oldindan tekshiriladi —
+    # aks holda qayta urinishda dublikat otgruzka yaratilib qolishi mumkin edi.
+    demand = await _find_demand_by_order(token, order["meta"]["href"])
+
+    if demand:
+        logger.info("Otgruzka allaqachon mavjud ekan (#%s) — qayta yaratilmaydi", demand.get("name"))
+    else:
         try:
-            await ms_request("DELETE", f"/entity/customerorder/{order['id']}", token=token)
-        except HTTPException as rollback_err:
-            raise RollbackFailedError(
-                f"Kunlik otgruzka yaratilmadi va zakaz #{order.get('name')}ni orqaga qaytarib bo'lmadi: {rollback_err.detail}"
-            ) from rollback_err
-        except (httpx.TimeoutException, httpx.TransportError) as rollback_exc:
-            raise DailyOrderAmbiguousError(
-                f"Otgruzka rad etildi va zakaz #{order.get('name')}ni orqaga qaytarishda tarmoq xatosi (holat noaniq): {rollback_exc}"
-            ) from rollback_exc
-        raise
+            demand = await ms_request(
+                "POST", "/entity/demand", token=token, json=demand_body, timeout=_DOC_CREATE_TIMEOUT_SECONDS
+            )
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            # MUHIM (2026-08-30'da qo'shilgan, order-yaratishdagi bilan bir
+            # xil naqsh): taslim bo'lishdan OLDIN, otgruzka HAQIQATDA
+            # yaratilganmi tekshiriladi (real productionda MoySklad ko'pincha
+            # hujjatni ulgurib yaratib, faqat javobni yubormay qolgani
+            # tasdiqlangan — masalan zakaz #02340 uchun aynan shu holat
+            # kuzatilgan edi). Topilmasagina, zakazni AVTOMATIK o'chirib
+            # bo'lmaydigani uchun (agar otgruzka aslida yaratilgan bo'lib
+            # chiqsa, buzilgan holat qoldirardi) qo'lda tekshirishga
+            # yuboriladi.
+            found_demand = await _find_demand_by_order(token, order["meta"]["href"])
+            if found_demand:
+                logger.info(
+                    "Otgruzka yaratish so'rovi vaqt tugashi bilan uzilgan edi, lekin otgruzka #%s haqiqatda yaratilgan ekan — davom etilmoqda",
+                    found_demand.get("name"),
+                )
+                demand = found_demand
+            else:
+                raise DailyOrderAmbiguousError(
+                    f"Kunlik otgruzka yaratishda tarmoq xatosi (holat noaniq, qidiruvda ham topilmadi, zakaz #{order.get('name')}): {exc}"
+                ) from exc
+        except HTTPException:
+            # MoySklad'ning O'ZI aniq rad etdi (tarmoq xatosi emas) — zakaz
+            # haqiqatda yaratilgani aniq, endi hech narsaga bog'lanmagan
+            # holda qolmasligi uchun xavfsiz orqaga qaytariladi.
+            try:
+                await ms_request("DELETE", f"/entity/customerorder/{order['id']}", token=token)
+            except HTTPException as rollback_err:
+                raise RollbackFailedError(
+                    f"Kunlik otgruzka yaratilmadi va zakaz #{order.get('name')}ni orqaga qaytarib bo'lmadi: {rollback_err.detail}"
+                ) from rollback_err
+            except (httpx.TimeoutException, httpx.TransportError) as rollback_exc:
+                raise DailyOrderAmbiguousError(
+                    f"Otgruzka rad etildi va zakaz #{order.get('name')}ni orqaga qaytarishda tarmoq xatosi (holat noaniq): {rollback_exc}"
+                ) from rollback_exc
+            raise
 
     await sheets_client.update_daily_order(
         business_day,
